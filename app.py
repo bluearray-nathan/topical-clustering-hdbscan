@@ -1,113 +1,163 @@
-# app_cluster_topics.py — Streamlit app for topical clustering
-# -------------------------------------------------------------
-# Upload cluster_descriptions.csv and group page-level clusters into higher-level topics.
+# app_cluster_topics_v2.py
+# --------------------------------------------------------
+# Improved topical clustering app for SEO topic grouping.
+# Uses cosine metric + embedding normalisation + optional topic merging.
 
 import os
-import json
 import time
-import pandas as pd
+import json
 import numpy as np
+import pandas as pd
 import streamlit as st
-import hdbscan
 import openai
-from sklearn.metrics.pairwise import cosine_similarity
+import hdbscan
 from sklearn.preprocessing import normalize
 from sklearn.decomposition import PCA
+from sklearn.metrics.pairwise import cosine_similarity
 import plotly.express as px
 
-# --------------------------------------------------
+# --------------------------------------------------------
 # Streamlit setup
-# --------------------------------------------------
-st.set_page_config(page_title="Topical Clustering", layout="wide")
-st.title("🧩 Topical Clustering — Group page-level clusters into broader topics")
-st.caption("Upload your `cluster_descriptions.csv` output file")
+# --------------------------------------------------------
+st.set_page_config(page_title="Topical Clustering v2", layout="wide")
+st.title("🧩 Topical Clustering — Improved Semantic Clustering")
+st.caption("Group your page-level clusters into higher-level SEO topics")
 
-# --------------------------------------------------
+# --------------------------------------------------------
 # API key setup
-# --------------------------------------------------
+# --------------------------------------------------------
 try:
     api_key = st.secrets["openai"]["api_key"]
 except Exception:
-    st.error("❌ Missing OpenAI API key. Please add it to `.streamlit/secrets.toml` or Streamlit Cloud Secrets.")
+    st.error("❌ Missing API key. Add it to `.streamlit/secrets.toml` or Streamlit Cloud Secrets.")
     st.stop()
 
 openai.api_key = api_key
 
-# --------------------------------------------------
+# --------------------------------------------------------
 # Parameters
-# --------------------------------------------------
+# --------------------------------------------------------
 embedding_model = "text-embedding-3-large"
-min_cluster_size = st.sidebar.slider("Min cluster size (HDBSCAN)", 3, 50, 8)
-min_samples = st.sidebar.slider("Min samples (HDBSCAN)", 1, 20, 3)
-generate_labels = st.sidebar.checkbox("Auto-label topics with LLM", value=True)
+min_cluster_size = st.sidebar.slider("Min cluster size", 2, 40, 5)
+min_samples = st.sidebar.slider("Min samples", 1, 10, 1)
+merge_clusters = st.sidebar.checkbox("Auto-merge similar topics (cosine > 0.8)", value=True)
+auto_label = st.sidebar.checkbox("Auto-label merged topics with LLM", value=True)
 temperature = 0.2
 
-# --------------------------------------------------
-# File upload
-# --------------------------------------------------
-file = st.file_uploader("Upload `cluster_descriptions.csv`", type=["csv"])
+st.sidebar.caption("💡 Tip: smaller values = more clusters; larger values = fewer, broader topics.")
+
+# --------------------------------------------------------
+# Upload CSV
+# --------------------------------------------------------
+file = st.file_uploader("Upload your `cluster_descriptions.csv`", type=["csv"])
 if not file:
-    st.info("Upload your CSV to start.")
+    st.info("Upload a CSV to start.")
     st.stop()
 
 df = pd.read_csv(file)
 if not {"descriptive_name", "explanation"}.issubset(df.columns):
-    st.error("CSV must contain 'descriptive_name' and 'explanation' columns.")
+    st.error("CSV must include 'descriptive_name' and 'explanation' columns.")
     st.stop()
 
-st.success(f"Loaded {len(df)} page-level clusters.")
+st.success(f"✅ Loaded {len(df)} clusters.")
 
-# --------------------------------------------------
-# Create text to embed
-# --------------------------------------------------
+# --------------------------------------------------------
+# Prepare text for embeddings
+# --------------------------------------------------------
 df["text_for_embedding"] = df["descriptive_name"].fillna("") + ". " + df["explanation"].fillna("")
 
-# --------------------------------------------------
-# Embed all clusters
-# --------------------------------------------------
-st.subheader("1️⃣ Generating embeddings...")
+# --------------------------------------------------------
+# Create embeddings
+# --------------------------------------------------------
+st.subheader("1️⃣ Generating embeddings (cosine-normalised)...")
+
 @st.cache_data(show_spinner=False)
 def embed_texts(texts):
-    embeddings = []
-    for i in range(0, len(texts), 100):  # batch in 100s
+    vectors = []
+    for i in range(0, len(texts), 100):
         batch = texts[i:i+100]
         response = openai.embeddings.create(
             model=embedding_model,
             input=batch
         )
-        batch_embeds = [d.embedding for d in response.data]
-        embeddings.extend(batch_embeds)
+        batch_vectors = [d.embedding for d in response.data]
+        vectors.extend(batch_vectors)
         time.sleep(0.2)
-    return np.array(embeddings)
+    return np.array(vectors)
 
 embeddings = embed_texts(df["text_for_embedding"].tolist())
+embeddings = normalize(embeddings)  # ✅ ensures cosine behaviour
 st.success(f"✅ Created {len(embeddings)} embeddings using {embedding_model}.")
 
-# --------------------------------------------------
-# 2️⃣ Cluster with HDBSCAN
-# --------------------------------------------------
-st.subheader("2️⃣ Running HDBSCAN clustering...")
+# --------------------------------------------------------
+# Cluster with HDBSCAN (cosine metric)
+# --------------------------------------------------------
+st.subheader("2️⃣ Running HDBSCAN clustering (cosine metric)...")
+
 clusterer = hdbscan.HDBSCAN(
     min_cluster_size=min_cluster_size,
     min_samples=min_samples,
-    metric="euclidean"
+    metric="cosine"
 )
 df["topic_id"] = clusterer.fit_predict(embeddings)
 
-n_clusters = len(set(df["topic_id"])) - (1 if -1 in df["topic_id"].values else 0)
-st.success(f"✅ Found {n_clusters} topics (plus noise).")
+n_clusters = len(set(df["topic_id"])) - (1 if -1 in df["topic_id"] else 0)
+st.success(f"✅ Found {n_clusters} initial topic clusters (+ noise).")
 
-# --------------------------------------------------
-# 3️⃣ Optional: Label topics via LLM
-# --------------------------------------------------
-if generate_labels and n_clusters > 0:
-    st.subheader("3️⃣ Generating topic labels (via LLM)...")
+# --------------------------------------------------------
+# Optional: Merge similar clusters
+# --------------------------------------------------------
+if merge_clusters and n_clusters > 1:
+    st.subheader("3️⃣ Merging semantically similar clusters...")
+    merged_map = {}
 
-    def summarize_cluster(texts):
+    # Compute centroids
+    centroids = {
+        cid: embeddings[df["topic_id"] == cid].mean(axis=0)
+        for cid in df["topic_id"].unique() if cid != -1
+    }
+
+    ids = list(centroids.keys())
+    centroids_matrix = np.vstack([centroids[cid] for cid in ids])
+    sim_matrix = cosine_similarity(centroids_matrix)
+
+    # Merge clusters whose centroids are similar (> 0.8)
+    merge_threshold = 0.8
+    merged_labels = {}
+    group_id = 0
+
+    visited = set()
+    for i, cid in enumerate(ids):
+        if cid in visited:
+            continue
+        group = [cid]
+        for j, cid2 in enumerate(ids):
+            if i != j and sim_matrix[i, j] > merge_threshold:
+                group.append(cid2)
+                visited.add(cid2)
+        for g in group:
+            merged_labels[g] = group_id
+        visited.add(cid)
+        group_id += 1
+
+    df["merged_topic_id"] = df["topic_id"].map(merged_labels).fillna(-1).astype(int)
+    n_merged = len(set(df["merged_topic_id"])) - (1 if -1 in df["merged_topic_id"] else 0)
+    st.success(f"✅ Merged into {n_merged} higher-level topics.")
+
+else:
+    df["merged_topic_id"] = df["topic_id"]
+
+# --------------------------------------------------------
+# Optional: Label topics via LLM
+# --------------------------------------------------------
+if auto_label:
+    st.subheader("4️⃣ Auto-labelling topics via GPT...")
+
+    def label_topic(texts):
         joined = ", ".join(texts[:15])
         prompt = (
-            f"These are titles and summaries of pages about a similar topic:\n{joined}\n\n"
-            "Provide a concise, human-readable topic name (2–4 words, noun phrase only, no punctuation):"
+            f"These are short titles and descriptions of pages about a similar topic:\n{joined}\n\n"
+            "Return ONLY a concise topic name (2–4 words, noun phrase, no punctuation):"
         )
         resp = openai.chat.completions.create(
             model="gpt-4o-mini-2024-07-18",
@@ -120,25 +170,26 @@ if generate_labels and n_clusters > 0:
         return resp.choices[0].message.content.strip()
 
     topic_labels = {}
-    for topic_id in sorted(df["topic_id"].unique()):
+    for topic_id in sorted(df["merged_topic_id"].unique()):
         if topic_id == -1:
             topic_labels[topic_id] = "Noise / Miscellaneous"
             continue
-        texts = df.loc[df["topic_id"] == topic_id, "descriptive_name"].tolist()
-        topic_labels[topic_id] = summarize_cluster(texts)
+        texts = df.loc[df["merged_topic_id"] == topic_id, "descriptive_name"].tolist()
+        topic_labels[topic_id] = label_topic(texts)
         time.sleep(0.2)
 
-    df["topic_label"] = df["topic_id"].map(topic_labels)
+    df["topic_label"] = df["merged_topic_id"].map(topic_labels)
     st.success("✅ Topic labels generated.")
 else:
-    df["topic_label"] = df["topic_id"].astype(str)
+    df["topic_label"] = df["merged_topic_id"].astype(str)
 
-# --------------------------------------------------
-# 4️⃣ Visualize clusters (PCA → 2D)
-# --------------------------------------------------
-st.subheader("4️⃣ Topic visualization (2D projection)")
+# --------------------------------------------------------
+# Visualise clusters
+# --------------------------------------------------------
+st.subheader("5️⃣ Visualising topics (2D PCA projection)...")
+
 pca = PCA(n_components=2)
-coords = pca.fit_transform(normalize(embeddings))
+coords = pca.fit_transform(embeddings)
 df["x"] = coords[:, 0]
 df["y"] = coords[:, 1]
 
@@ -148,20 +199,21 @@ fig = px.scatter(
     y="y",
     color="topic_label",
     hover_data=["descriptive_name", "explanation"],
-    title="Topic Clusters (HDBSCAN)",
+    title="Topical Clusters (HDBSCAN + Cosine)",
     width=1000,
     height=700
 )
 st.plotly_chart(fig, use_container_width=True)
 
-# --------------------------------------------------
-# 5️⃣ Export results
-# --------------------------------------------------
-st.subheader("5️⃣ Export clustered data")
+# --------------------------------------------------------
+# Export
+# --------------------------------------------------------
+st.subheader("6️⃣ Export clustered topics")
 csv = df.to_csv(index=False).encode("utf-8")
-st.download_button("📥 Download Clustered Topics CSV", csv, "clustered_topics.csv", "text/csv")
+st.download_button("📥 Download Clustered Topics CSV", csv, "clustered_topics_v2.csv", "text/csv")
 
-st.success("✅ Done! You can now review your topic clusters and download the output.")
+st.success("✅ Done! Explore clusters above or download for further analysis.")
+
 
 
 
