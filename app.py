@@ -1,7 +1,7 @@
-# app.py — Topical Clustering (Cosine + Optional Merge)
-# -----------------------------------------------------
+# app.py — Topical Clustering (Cosine) — descriptive_name ONLY
+# ------------------------------------------------------------
 # Upload cluster_descriptions.csv (columns: descriptive_name, explanation)
-# Embeds with OpenAI -> precomputed cosine distances -> HDBSCAN
+# Embeds ONLY the descriptive_name -> precomputed cosine distances -> HDBSCAN
 # Optional centroid-based topic merging and LLM topic labels
 
 import os
@@ -20,7 +20,7 @@ import plotly.express as px
 # ----------------------------- Streamlit setup -----------------------------
 st.set_page_config(page_title="Topical Clustering (Cosine)", layout="wide")
 st.title("🧩 Topical Clustering — Cosine Distance")
-st.caption("Upload your `cluster_descriptions.csv` (columns: descriptive_name, explanation).")
+st.caption("Embeds **descriptive_name** only for broader, cleaner clusters.")
 
 # ----------------------------- API key -----------------------------
 try:
@@ -39,19 +39,20 @@ with st.sidebar:
         ["text-embedding-3-large", "text-embedding-3-small"],
         index=0
     )
-    min_cluster_size = st.slider("HDBSCAN: min_cluster_size", 2, 40, 5)
-    min_samples = st.slider("HDBSCAN: min_samples", 1, 10, 1)
+    # Broader defaults
+    min_cluster_size = st.slider("HDBSCAN: min_cluster_size", 2, 40, 10)  # ↑ for broader clusters
+    min_samples = st.slider("HDBSCAN: min_samples", 1, 10, 2)             # ↓ to reduce noise
 
     st.header("Topic Merge (Optional)")
     merge_clusters = st.checkbox("Auto-merge similar clusters (centroid cosine)", value=True)
-    merge_threshold = st.slider("Merge threshold (cosine)", 0.50, 0.95, 0.80, 0.01)
+    merge_threshold = st.slider("Merge threshold (cosine)", 0.50, 0.95, 0.70, 0.01)
 
     st.header("Labelling")
     auto_label_topics = st.checkbox("Auto-label topics (LLM)", value=True)
     label_model = st.selectbox("Labelling model", ["gpt-4o-mini-2024-07-18"], index=0)
     label_temp = st.slider("Labelling temperature", 0.0, 1.0, 0.2, 0.05)
 
-    st.caption("💡 Tips: Lower thresholds merge more; increase min_cluster_size for fewer, larger topics.")
+    st.caption("💡 Tips: Increase min_cluster_size & lower merge threshold for broader topics.")
 
 # ----------------------------- File upload -----------------------------
 file = st.file_uploader("Upload `cluster_descriptions.csv`", type=["csv"])
@@ -67,8 +68,9 @@ if not required_cols.issubset(df.columns):
 
 st.success(f"✅ Loaded {len(df)} page-level clusters.")
 
-# ----------------------------- Prepare text -----------------------------
-df["text_for_embedding"] = df["descriptive_name"].fillna("") + ". " + df["explanation"].fillna("")
+# ----------------------------- Embedding text (NAME ONLY) -----------------------------
+# ⬇️ Key change: we embed ONLY the descriptive_name (no explanation)
+df["text_for_embedding"] = df["descriptive_name"].fillna("").astype(str)
 
 # ----------------------------- Embeddings -----------------------------
 st.subheader("1️⃣ Generating embeddings (OpenAI)")
@@ -79,7 +81,7 @@ def embed_texts(texts, model):
         batch = texts[i:i+100]
         resp = openai.embeddings.create(model=model, input=batch)
         vectors.extend([d.embedding for d in resp.data])
-        time.sleep(0.2)  # gentle pacing
+        time.sleep(0.15)  # gentle pacing
     return np.array(vectors)
 
 embeddings = embed_texts(df["text_for_embedding"].tolist(), embedding_model)
@@ -143,7 +145,7 @@ else:
 def label_topic_short(texts, model_name, temp):
     joined = ", ".join(texts[:20])
     prompt = (
-        "These page titles/descriptions are about a similar topic:\n"
+        "These page titles are about a similar topic:\n"
         f"{joined}\n\n"
         "Return ONLY a concise topic name (2–4 words, noun phrase, no punctuation)."
     )
@@ -166,7 +168,7 @@ if auto_label_topics:
             continue
         texts = df.loc[df["merged_topic_id"] == tid, "descriptive_name"].tolist()
         topic_labels[tid] = label_topic_short(texts, label_model, label_temp)
-        time.sleep(0.1)
+        time.sleep(0.05)
     df["topic_label"] = df["merged_topic_id"].map(topic_labels)
 else:
     df["topic_label"] = df["merged_topic_id"].astype(str)
@@ -184,7 +186,7 @@ fig = px.scatter(
     y="y",
     color="topic_label",
     hover_data=["descriptive_name", "explanation"],
-    title="Topical Clusters (HDBSCAN + Cosine)",
+    title="Topical Clusters (HDBSCAN + Cosine, Name-only Embeddings)",
     width=1100,
     height=720
 )
@@ -209,7 +211,8 @@ export_cols = ["descriptive_name", "explanation", "topic_id", "merged_topic_id",
 csv = df[export_cols].to_csv(index=False).encode("utf-8")
 st.download_button("📥 Download Clustered Topics CSV", csv, "clustered_topics.csv", "text/csv")
 
-st.success("✅ Done! Adjust thresholds to shape topics.")
+st.success("✅ Done! Use higher min_cluster_size and lower merge threshold for broader topics.")
+
 
 
 
