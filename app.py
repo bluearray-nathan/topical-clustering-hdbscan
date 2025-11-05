@@ -1,12 +1,14 @@
-# app.py — Topic Clustering (simple, user-friendly)
-# --------------------------------------------------
+# app.py — Topic Clustering (simple, relabel button + topics table)
+# ----------------------------------------------------------------
 # - Embeds ONLY descriptive_name (OpenAI text-embedding-3-large)
 # - HDBSCAN with EoM selection (epsilon slider explained)
-# - Optional UMAP smoothing via presets (Off / Broad / Balanced / Detailed)
+# - Optional UMAP smoothing presets (Off / Broad / Balanced / Detailed)
 # - No topic merge, no noise rescue
-# - LLM labelling kept
+# - GPT labelling with "Re-label now" button
+# - Topics table (size + label + example titles)
 
 import time
+import hashlib
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -19,7 +21,7 @@ import plotly.express as px
 
 st.set_page_config(page_title="Topical Clustering (Simple)", layout="wide")
 st.title("🧩 Topical Clustering")
-st.caption("Embeds **descriptive_name** only • HDBSCAN (EoM) • optional UMAP smoothing • optional labels")
+st.caption("Embeds **descriptive_name** only • HDBSCAN (EoM) • optional UMAP smoothing • GPT labels")
 
 # ----------------------------- API key -----------------------------
 try:
@@ -143,7 +145,7 @@ if use_umap:
         random_state=42
     )
     X_for_cluster = umap.fit_transform(embeddings)
-    st.success(f"✅ UMAP applied ({n_neighbors=}, {n_components=}).")
+    st.success(f"✅ UMAP applied (n_neighbors={n_neighbors}, n_components={n_components}).")
 else:
     st.subheader("2️⃣ Computing cosine distance matrix")
     distance_matrix = cosine_distances(embeddings)
@@ -176,7 +178,7 @@ n_topics = len(set(labels)) - (1 if -1 in labels else 0)
 noise_pct = (labels == -1).mean() * 100 if len(labels) else 0.0
 st.success(f"✅ Topics found: {n_topics} • Noise: {noise_pct:.1f}%")
 
-# ----------------------------- Labelling (kept) ---------------------------
+# ----------------------------- Labelling utils ---------------------------
 def label_topic_short(texts, model_name, temp):
     joined = ", ".join(texts[:20])
     prompt = (
@@ -194,22 +196,68 @@ def label_topic_short(texts, model_name, temp):
     )
     return resp.choices[0].message.content.strip()
 
+def topics_summary_table(frame, label_col):
+    # Build a compact table: topic_id, size, label, example titles
+    rows = []
+    for tid in sorted(frame["topic_id"].unique()):
+        subset = frame[frame["topic_id"] == tid]
+        size = len(subset)
+        label = subset[label_col].iloc[0] if label_col in subset.columns else str(tid)
+        examples = subset["descriptive_name"].head(3).tolist()
+        rows.append({
+            "topic_id": int(tid),
+            "size": size,
+            "topic_label": label,
+            "example_titles": " | ".join(examples)
+        })
+    return pd.DataFrame(rows).sort_values(["topic_id"])
+
+# ----------------------------- Label state & button -----------------------
+# Hash current topic assignments for caching labelling results
+topic_hash = hashlib.md5(np.array(labels, dtype=np.int64).tobytes()).hexdigest()
+
+# Prepare session state
+if "last_topic_hash" not in st.session_state:
+    st.session_state["last_topic_hash"] = None
+if "topic_labels_map" not in st.session_state:
+    st.session_state["topic_labels_map"] = {}
+
+# Button to re-label on demand
+st.subheader("4️⃣ Topic labels")
+relabel_now = st.button("🔁 Re-label topics now")
+
+# Decide whether to (re)label:
+should_label = False
 if auto_label_topics:
-    st.subheader("4️⃣ Auto-labelling topics")
-    topic_labels = {}
-    for tid in sorted(df["topic_id"].unique()):
+    # Auto-label on first run, or when topics changed, or when user forces relabel
+    if st.session_state["last_topic_hash"] != topic_hash or relabel_now:
+        should_label = True
+
+if should_label:
+    labels_map = {}
+    for tid in sorted(set(labels)):
         if tid == -1:
-            topic_labels[tid] = "Noise / Misc"
+            labels_map[tid] = "Noise / Misc"
             continue
-        sample_titles = df.loc[df["topic_id"] == tid, "descriptive_name"].tolist()
-        topic_labels[tid] = label_topic_short(sample_titles, label_model, label_temp)
+        titles = df.loc[df["topic_id"] == tid, "descriptive_name"].tolist()
+        labels_map[tid] = label_topic_short(titles, label_model, label_temp)
         time.sleep(0.04)
-    df["topic_label"] = df["topic_id"].map(topic_labels)
+    st.session_state["topic_labels_map"] = labels_map
+    st.session_state["last_topic_hash"] = topic_hash
+
+# Apply labels (if we have them), else fall back to string of topic_id
+if st.session_state["topic_labels_map"]:
+    df["topic_label"] = df["topic_id"].map(st.session_state["topic_labels_map"]).astype(str)
 else:
     df["topic_label"] = df["topic_id"].astype(str)
 
+# ----------------------------- Topics table ------------------------------
+st.subheader("5️⃣ Topics table")
+summary_df = topics_summary_table(df, "topic_label")
+st.dataframe(summary_df, use_container_width=True, height=420)
+
 # ----------------------------- Visualisation -----------------------------
-st.subheader("5️⃣ Visualise topics (2D PCA)")
+st.subheader("6️⃣ Visualise topics (2D PCA)")
 pca = PCA(n_components=2)
 coords = pca.fit_transform(embeddings)
 df["x"] = coords[:, 0]
@@ -233,12 +281,13 @@ with col2:
     st.metric("Noise (%)", value=f"{noise_pct:.1f}%")
 
 # ----------------------------- Export -----------------------------
-st.subheader("6️⃣ Export")
+st.subheader("7️⃣ Export")
 export_cols = ["descriptive_name", "explanation", "topic_id", "topic_label", "x", "y"]
 csv = df[export_cols].to_csv(index=False).encode("utf-8")
 st.download_button("📥 Download Clustered Topics", csv, "clustered_topics_simple.csv", "text/csv")
 
-st.success("✅ Done! Tip: Use UMAP 'Broad' and a small ε (e.g., 0.05) to reduce noise while keeping sensible topics.")
+st.success("✅ Tip: Use UMAP 'Broad' and small ε (e.g., 0.05) to reduce noise while keeping sensible topics.")
+
 
 
 
