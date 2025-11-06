@@ -1,4 +1,4 @@
-# app.py — Fast Topic Clustering (embed from `cluster`, no upfront LLM naming)
+# app.py — Fast Hierarchical Topic Clustering (Parent & Child)
 # ----------------------------------------------------------------------------
 # Input CSV columns (required):
 #   - cluster (main page-level cluster keyword)
@@ -8,17 +8,19 @@
 # Flow:
 # 1) Embeds ONLY the `cluster` text (OpenAI text-embedding-3-large, fixed)
 # 2) Optional UMAP smoothing via presets (Off/Broad/Balanced/Detailed)
-#    → presets also auto-set HDBSCAN defaults (min_cluster_size, min_samples, ε)
-# 3) HDBSCAN (EoM) with easy epsilon slider
-# 4) GPT topic labels with concurrency + progress bar + rolling ETA
-# 5) Visualisation (scatter) → Topics table
-# 6) Export: Topic, Cluster (descriptive name), cluster, keyword, search volume
-#    (Cluster (descriptive name) mirrors `cluster` since upfront LLM naming is removed.)
+# 3) HDBSCAN pass A → Parent clusters (coarse)
+# 4) HDBSCAN pass B → Child clusters within each parent (fine)
+# 5) GPT topic labels (parents then children) with concurrency + progress
+# 6) Visualisation (PCA scatter)
+# 7) Summaries (parents, then children)
+# 8) Export: Parent Topic, Child Topic, Cluster (descriptive name), cluster, keyword, search volume
+#
+# Notes:
+# - Streamlit deprecation: use width="stretch" instead of use_container_width.
+# - Robust error surfacing with visible tracebacks.
 
 import time
 import math
-import re
-import json
 import hashlib
 import numpy as np
 import pandas as pd
@@ -34,9 +36,9 @@ from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_distances
 import plotly.express as px
 
-st.set_page_config(page_title="Topical Clustering (Fast)", layout="wide")
-st.title("🧩 Topical Clustering (Fast)")
-st.caption("Embeds the page-level cluster keyword • UMAP presets • HDBSCAN (EoM) • GPT labels with progress")
+st.set_page_config(page_title="Topical Clustering (Fast • Hierarchical)", layout="wide")
+st.title("🧩 Topical Clustering (Fast • Hierarchical)")
+st.caption("Embeds the page-level cluster keyword • UMAP presets • HDBSCAN Parents→Children • GPT labels with progress")
 
 # ----------------------------- API key -----------------------------
 try:
@@ -64,20 +66,23 @@ if "min_samples" not in st.session_state:
     st.session_state.min_samples = PRESET_DEFAULTS["Balanced"]["min_samples"]
 if "cluster_selection_epsilon" not in st.session_state:
     st.session_state.cluster_selection_epsilon = PRESET_DEFAULTS["Balanced"]["epsilon"]
-if "topic_labels_map" not in st.session_state:
-    st.session_state.topic_labels_map = {}
-if "last_topic_hash" not in st.session_state:
-    st.session_state.last_topic_hash = None
+
+# Label maps & hashes
+if "parent_labels_map" not in st.session_state:
+    st.session_state.parent_labels_map = {}
+if "child_labels_map" not in st.session_state:
+    st.session_state.child_labels_map = {}
+if "last_parent_hash" not in st.session_state:
+    st.session_state.last_parent_hash = None
+if "last_child_hash" not in st.session_state:
+    st.session_state.last_child_hash = None
 
 # ----------------------------- Sidebar controls -----------------------------
 with st.sidebar:
-    st.header("Clustering Settings")
-
-    # Embedding model locked
+    st.header("Embedding")
     st.text("Embedding model")
     st.code("text-embedding-3-large", language="text")
 
-    # UMAP presets (auto-apply defaults)
     st.header("UMAP Smoothing")
     umap_preset = st.selectbox(
         "Preset",
@@ -98,45 +103,25 @@ with st.sidebar:
         st.session_state.cluster_selection_epsilon = d["epsilon"]
         st.session_state.last_preset_applied = umap_preset
 
-    # Sliders (values controlled by preset, but tweakable)
-    min_cluster_size = st.slider(
-        "Minimum topic size",
-        min_value=2, max_value=60, value=st.session_state.min_cluster_size, key="min_cluster_size",
-        help=(
-            "The smallest group HDBSCAN will call a topic. "
-            "Higher = fewer, broader topics (and potentially less noise). "
-            "Lower = more, smaller topics (can increase noise)."
-        )
-    )
-    min_samples = st.slider(
-        "Strictness (min samples)",
-        min_value=1, max_value=10, value=st.session_state.min_samples, key="min_samples",
-        help=(
-            "How picky HDBSCAN is about density. "
-            "Lower values accept looser groups (less noise). "
-            "Higher values require tighter groups (more noise but higher confidence)."
-        )
-    )
+    st.header("Hierarchy Density")
+    st.subheader("Parents (coarse)")
+    min_cluster_size_parent = st.slider("Parent min size", 2, 200, 20)
+    min_samples_parent      = st.slider("Parent min samples", 1, 10, 2)
+    epsilon_parent          = st.slider("Parent ε (EoM gap-bridge)", 0.00, 0.20, 0.07, 0.01)
 
-    st.text("Topic merging sensitivity (EoM)")
-    cluster_selection_epsilon = st.slider(
-        "Bridge tiny gaps (ε)",
-        min_value=0.00, max_value=0.20, value=st.session_state.cluster_selection_epsilon,
-        step=0.01, key="cluster_selection_epsilon",
-        help=(
-            "Small values (e.g., 0.03–0.10) let HDBSCAN bridge tiny gaps between near-identical sub-groups, "
-            "reducing noise. Set to 0.00 if you want stricter separation."
-        )
-    )
+    st.subheader("Children (fine)")
+    min_cluster_size_child = st.slider("Child min size", 2, 100, 8)
+    min_samples_child      = st.slider("Child min samples", 1, 10, 2)
+    epsilon_child          = st.slider("Child ε (EoM gap-bridge)", 0.00, 0.20, 0.04, 0.01)
 
     st.header("Labelling")
-    auto_label_topics = st.checkbox("Auto-label topics with GPT", value=True)
-    relabel_now = st.button("🔁 Re-label topics now")  # in sidebar
+    auto_label_topics = st.checkbox("Auto-label parents & children with GPT", value=True)
+    relabel_now = st.button("🔁 Re-label now")
     label_model = "gpt-4o-mini-2024-07-18"
     label_temp = st.slider("Labelling creativity", 0.0, 1.0, 0.2, 0.05)
 
     with st.expander("Throughput helper (what-if)"):
-        n_est = st.number_input("Clusters to label", 1, 100000, value=1000, step=1)
+        n_est = st.number_input("Groups to label", 1, 100000, value=1000, step=1)
         conc_est = st.slider("Concurrency (workers)", 1, 32, value=12)
         avg_est = st.number_input("Avg seconds per label (observed)", 0.1, 60.0, value=1.8, step=0.1)
         batches = math.ceil(n_est / conc_est)
@@ -179,7 +164,6 @@ st.subheader("2️⃣ Generate embeddings (from `cluster`)")
 def embed_texts(texts):
     model = "text-embedding-3-large"  # locked
     vecs = []
-    # Defensive: convert Nones to empty strings
     texts = [t if isinstance(t, str) else "" for t in texts]
     for i in range(0, len(texts), 100):
         batch = texts[i:i+100]
@@ -246,39 +230,88 @@ except Exception:
     st.code(traceback.format_exc())
     st.stop()
 
-# ----------------------------- HDBSCAN (EoM) -----------------------------
-st.subheader("4️⃣ HDBSCAN clustering")
-hdb_params = dict(
-    min_cluster_size=st.session_state.min_cluster_size,
-    min_samples=st.session_state.min_samples,
+# ----------------------------- HDBSCAN Pass A — Parents -----------------------------
+st.subheader("4️⃣ HDBSCAN (Parents — coarse)")
+hdb_parent = dict(
+    min_cluster_size=min_cluster_size_parent,
+    min_samples=min_samples_parent,
     cluster_selection_method="eom",
-    cluster_selection_epsilon=float(st.session_state.cluster_selection_epsilon)
+    cluster_selection_epsilon=float(epsilon_parent),
 )
 
 try:
     if use_umap:
-        hdb_params["metric"] = "euclidean"
-        clusterer = hdbscan.HDBSCAN(**hdb_params)
-        labels = clusterer.fit_predict(X_for_cluster)
+        hdb_parent["metric"] = "euclidean"
+        parenter = hdbscan.HDBSCAN(**hdb_parent)
+        labels_parent = parenter.fit_predict(X_for_cluster)
     else:
-        hdb_params["metric"] = "precomputed"
-        clusterer = hdbscan.HDBSCAN(**hdb_params)
-        labels = clusterer.fit_predict(distance_matrix)
+        hdb_parent["metric"] = "precomputed"
+        parenter = hdbscan.HDBSCAN(**hdb_parent)
+        labels_parent = parenter.fit_predict(distance_matrix)
 
     df = df_raw.copy()
-    df["topic_id"] = labels
-
-    n_topics = len(set(labels)) - (1 if -1 in labels else 0)
-    noise_pct = (labels == -1).mean() * 100 if len(labels) else 0.0
-    st.success(f"✅ Topics found: {n_topics} • Noise: {noise_pct:.1f}%")
+    df["parent_id"] = labels_parent
+    n_parents = len(set(labels_parent)) - (1 if -1 in labels_parent else 0)
+    noise_parent_pct = (labels_parent == -1).mean() * 100 if len(labels_parent) else 0.0
+    st.success(f"✅ Parent clusters: {n_parents} • Parent noise: {noise_parent_pct:.1f}%")
 except Exception:
-    st.error("Error during HDBSCAN clustering.")
+    st.error("Error during HDBSCAN (parents).")
     st.code(traceback.format_exc())
     st.stop()
 
-# ----------------------------- Topic labelling (concurrent + progress) -----------------------------
+# ----------------------------- HDBSCAN Pass B — Children per Parent -----------------------------
+st.subheader("5️⃣ HDBSCAN (Children — fine within each parent)")
+child_ids = np.full(len(df), -1, dtype=int)
+hdb_child_base_params = dict(
+    min_cluster_size=min_cluster_size_child,
+    min_samples=min_samples_child,
+    cluster_selection_method="eom",
+    cluster_selection_epsilon=float(epsilon_child),
+)
+
+try:
+    next_child_base = 0  # ensures globally unique child ids (single int col)
+    unique_parents = sorted(set(labels_parent))
+    for pid in unique_parents:
+        if pid == -1:
+            continue
+        idx = np.where(labels_parent == pid)[0]
+        if len(idx) == 0:
+            continue
+
+        # If too small for a second clustering, bucket as one child
+        if len(idx) < hdb_child_base_params["min_cluster_size"]:
+            child_ids[idx] = next_child_base
+            next_child_base += 1
+            continue
+
+        if use_umap:
+            X_sub = X_for_cluster[idx]
+            child_params = {**hdb_child_base_params, "metric": "euclidean"}
+            ch_local = hdbscan.HDBSCAN(**child_params).fit_predict(X_sub)
+        else:
+            D_sub = distance_matrix[np.ix_(idx, idx)]
+            child_params = {**hdb_child_base_params, "metric": "precomputed"}
+            ch_local = hdbscan.HDBSCAN(**child_params).fit_predict(D_sub)
+
+        # map local child labels to global unique ids
+        unique_local = [c for c in sorted(set(ch_local)) if c != -1]
+        mapping = {c: (next_child_base + i) for i, c in enumerate(unique_local)}
+        child_ids[idx] = np.array([mapping.get(c, -1) for c in ch_local])
+        next_child_base += len(unique_local)
+
+    df["child_id"] = child_ids
+    n_children = len(set(child_ids)) - (1 if -1 in child_ids else 0)
+    noise_child_pct = (child_ids == -1).mean() * 100 if len(child_ids) else 0.0
+    st.success(f"✅ Child clusters: {n_children} • Child noise: {noise_child_pct:.1f}%")
+except Exception:
+    st.error("Error during HDBSCAN (children).")
+    st.code(traceback.format_exc())
+    st.stop()
+
+# ----------------------------- Topic labelling (parents then children) -----------------------------
 def label_topic_short(titles, model_name, temp):
-    joined = ", ".join(titles[:20])
+    joined = ", ".join(titles[:40])
     prompt = (
         "These page titles are about a similar topic:\n"
         f"{joined}\n\n"
@@ -294,68 +327,84 @@ def label_topic_short(titles, model_name, temp):
     )
     return resp.choices[0].message.content.strip()
 
-try:
-    topic_hash = hashlib.md5(np.array(labels, dtype=np.int64).tobytes()).hexdigest()
+def label_groups(df_in, id_col, label_col_name, label_model, label_temp):
+    unique_ids = [i for i in sorted(df_in[id_col].unique()) if i != -1]
+    labels_map = {-1: "Noise / Misc"}
+    MAX_WORKERS = min(12, max(1, len(unique_ids)))
+    progress = st.progress(0.0)
+    status = st.empty()
+    done, total = 0, len(unique_ids)
 
-    should_label = False
-    # Evaluate if we need to (re)label
-    auto_label_topics = 'auto_label_topics' in locals() and auto_label_topics
-    relabel_now = 'relabel_now' in locals() and relabel_now
+    def one(gid):
+        titles = df_in.loc[df_in[id_col] == gid, "descriptive_name"].head(40).tolist()
+        start = time.time()
+        name = label_topic_short(titles, label_model, label_temp)
+        dur = time.time() - start
+        return gid, name, dur
+
+    timings = deque(maxlen=20)
+    with cf.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        futures = [ex.submit(one, gid) for gid in unique_ids]
+        for f in cf.as_completed(futures):
+            gid, name, dur = f.result()
+            labels_map[gid] = name
+            timings.append(dur)
+            done += 1
+            progress.progress(done / max(1, total))
+            spc = float(np.mean(timings)) if len(timings) else 0.0
+            eta_sec = max(total - done, 0) * spc
+            status.text(f"Labeled {done}/{total} • avg {spc:.2f}s • ETA ~{int(eta_sec//60)}m {int(eta_sec%60)}s")
+
+    df_in[label_col_name] = df_in[id_col].map(labels_map).astype(str)
+    return labels_map
+
+try:
+    # Hashes for cache invalidation
+    parent_hash = hashlib.md5(np.array(df["parent_id"], dtype=np.int64).tobytes()).hexdigest()
+    child_hash  = hashlib.md5(np.array(df[["parent_id","child_id"]], dtype=np.int64).tobytes()).hexdigest()
+
+    should_label_parents = auto_label_topics and (st.session_state.last_parent_hash != parent_hash or relabel_now)
+    should_label_children = auto_label_topics and (st.session_state.last_child_hash != child_hash or relabel_now)
 
     if auto_label_topics:
-        if st.session_state.last_topic_hash != topic_hash or relabel_now:
-            should_label = True
+        if should_label_parents:
+            st.subheader("6️⃣ Labelling parents")
+            st.session_state.parent_labels_map = label_groups(
+                df, "parent_id", "parent_label", label_model, label_temp
+            )
+            st.session_state.last_parent_hash = parent_hash
+        else:
+            # Ensure column exists from previous run
+            if "parent_label" not in df.columns and st.session_state.parent_labels_map:
+                df["parent_label"] = df["parent_id"].map(st.session_state.parent_labels_map).astype(str)
 
-    if should_label:
-        st.subheader("5️⃣ Topic labels (running)")
-        unique_topic_ids = sorted(set(df["topic_id"]))
-        if -1 in unique_topic_ids:
-            unique_topic_ids.remove(-1)
+        if should_label_children:
+            st.subheader("7️⃣ Labelling children")
+            st.session_state.child_labels_map = label_groups(
+                df, "child_id", "child_label", label_model, label_temp
+            )
+            st.session_state.last_child_hash = child_hash
+        else:
+            if "child_label" not in df.columns and st.session_state.child_labels_map:
+                df["child_label"] = df["child_id"].map(st.session_state.child_labels_map).astype(str)
+    else:
+        df["parent_label"] = df["parent_id"].astype(str)
+        df["child_label"]  = df["child_id"].astype(str)
 
-        MAX_WORKERS = max(1, min(12, len(unique_topic_ids)))  # cap workers sensibly
-        ROLL_N = 20
-        progress = st.progress(0)
-        status = st.empty()
-        timings = deque(maxlen=ROLL_N)
-        labels_map = { -1: "Noise / Misc" }
-        done = 0
-        total = len(unique_topic_ids)
+    # If labels just created by label_groups, columns are already set.
+    if "parent_label" not in df.columns:
+        df["parent_label"] = df["parent_id"].map(st.session_state.parent_labels_map or {}).astype(str)
+    if "child_label" not in df.columns:
+        df["child_label"] = df["child_id"].map(st.session_state.child_labels_map or {}).astype(str)
 
-        def label_one_cluster(tid):
-            start = time.time()
-            titles = df.loc[df["topic_id"] == tid, "descriptive_name"].tolist()
-            name = label_topic_short(titles, label_model, label_temp)
-            dur = time.time() - start
-            return tid, name, dur
-
-        with cf.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            futures = [ex.submit(label_one_cluster, tid) for tid in unique_topic_ids]
-            for fut in cf.as_completed(futures):
-                tid, name, dur = fut.result()
-                labels_map[tid] = name
-                timings.append(dur)
-                done += 1
-                progress.progress(done / max(total, 1))
-                spc = float(np.mean(timings)) if len(timings) else 0.0
-                eta_sec = max(total - done, 0) * spc
-                status.text(f"Labelled {done}/{total} • avg {spc:.2f}s/label • ~ETA {int(eta_sec//60)}m {int(eta_sec%60)}s")
-
-        st.session_state.topic_labels_map = labels_map
-        st.session_state.last_topic_hash = topic_hash
-        st.success("✅ Labelling complete.")
+    st.success("✅ Labelling step complete.")
 except Exception:
     st.error("Error during topic labelling.")
     st.code(traceback.format_exc())
     st.stop()
 
-# Apply labels (cached if available)
-if st.session_state.topic_labels_map:
-    df["topic_label"] = df["topic_id"].map(st.session_state.topic_labels_map).astype(str)
-else:
-    df["topic_label"] = df["topic_id"].astype(str)
-
 # ----------------------------- Visualisation -----------------------------
-st.subheader("6️⃣ Visualise topics (2D PCA)")
+st.subheader("8️⃣ Visualise hierarchy (2D PCA)")
 try:
     pca = PCA(n_components=2)
     coords = pca.fit_transform(embeddings)
@@ -364,61 +413,67 @@ try:
 
     fig = px.scatter(
         df, x="x", y="y",
-        color="topic_label",
-        hover_data=["descriptive_name", "cluster", "keyword", "search volume"],
-        title="Topical Clusters (HDBSCAN EoM)",
+        color="parent_label",      # high-level color
+        symbol="child_label",      # shape differentiates children
+        hover_data=["parent_label", "child_label", "descriptive_name", "cluster", "keyword", "search volume"],
+        title="Parent & Child Topical Clusters (HDBSCAN EoM)",
         width=1100, height=720
     )
-    # Updated param: use width="stretch" instead of deprecated use_container_width
     st.plotly_chart(fig, width="stretch")
 except Exception:
     st.error("Error while rendering the PCA scatter plot.")
     st.code(traceback.format_exc())
     st.stop()
 
-# ----------------------------- Topics table (below viz) -------------------
-st.subheader("7️⃣ Topics table")
-def topics_summary_table(frame):
-    rows = []
-    for tid in sorted(frame["topic_id"].unique()):
-        subset = frame[frame["topic_id"] == tid]
-        size = len(subset)
-        label = subset["topic_label"].iloc[0]
-        examples = subset["descriptive_name"].head(3).tolist()
-        rows.append({
-            "topic_id": int(tid),
-            "size": size,
-            "topic_label": label,
-            "example_titles": " | ".join(examples)
-        })
-    return pd.DataFrame(rows).sort_values(["topic_id"])
-
+# ----------------------------- Summaries -----------------------------
+st.subheader("9️⃣ Parent summary")
 try:
-    summary_df = topics_summary_table(df)
-    # Updated param: use width="stretch" instead of deprecated use_container_width
-    st.dataframe(summary_df, width="stretch", height=420)
+    parent_summary = (
+        df[df["parent_id"] != -1]
+        .groupby(["parent_id", "parent_label"])
+        .agg(size=("descriptive_name", "size"))
+        .reset_index()
+        .sort_values("size", ascending=False)
+    )
+    st.dataframe(parent_summary, width="stretch", height=300)
 except Exception:
-    st.error("Error while building the topics table.")
+    st.error("Error while building the parent summary.")
     st.code(traceback.format_exc())
-    st.stop()
+
+st.subheader("🔟 Child summary (per parent)")
+try:
+    child_summary = (
+        df[df["child_id"] != -1]
+        .groupby(["parent_id", "parent_label", "child_id", "child_label"])
+        .agg(size=("descriptive_name", "size"))
+        .reset_index()
+        .sort_values(["parent_id", "size"], ascending=[True, False])
+    )
+    st.dataframe(child_summary, width="stretch", height=420)
+except Exception:
+    st.error("Error while building the child summary.")
+    st.code(traceback.format_exc())
 
 # ----------------------------- Export -----------------------------
-st.subheader("8️⃣ Export")
+st.subheader("1️⃣1️⃣ Export")
 try:
-    # "Cluster (descriptive name)" mirrors `cluster` now (no LLM naming step)
     export_df = df.rename(columns={"descriptive_name": "Cluster (descriptive name)"})
     export_df = export_df[[
-        "topic_label", "Cluster (descriptive name)", "cluster", "keyword", "search volume"
-    ]].rename(columns={"topic_label": "Topic"})
+        "parent_label", "child_label", "Cluster (descriptive name)",
+        "cluster", "keyword", "search volume"
+    ]].rename(columns={
+        "parent_label": "Parent Topic",
+        "child_label": "Child Topic"
+    })
 
     csv = export_df.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Download Topics CSV", csv, "clustered_topics_with_clusters.csv", "text/csv")
+    st.download_button("📥 Download Hierarchical Topics CSV", csv, "hierarchical_topics.csv", "text/csv")
+    st.success("✅ Done! Use UMAP+parent params for structure; child params to surface subtopics.")
 except Exception:
     st.error("Error while preparing the CSV export.")
     st.code(traceback.format_exc())
     st.stop()
 
-st.success("✅ Done! Embedding from `cluster` speeds up large datasets. Use a UMAP preset to set sensible defaults, tweak, and hit “Re-label topics now” anytime.")
 
 
 
