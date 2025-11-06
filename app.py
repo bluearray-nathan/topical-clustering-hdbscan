@@ -1,4 +1,4 @@
-# app.py — Fast Hierarchical Topic Clustering (Parent & Child)
+# app.py — Fast Hierarchical Topic Clustering (Parent & Child, Adaptive Children)
 # ----------------------------------------------------------------------------
 # Input CSV columns (required):
 #   - cluster (main page-level cluster keyword)
@@ -9,7 +9,7 @@
 # 1) Embeds ONLY the `cluster` text (OpenAI text-embedding-3-large, fixed)
 # 2) Optional UMAP smoothing via presets (Off/Broad/Balanced/Detailed)
 # 3) HDBSCAN pass A → Parent clusters (coarse)
-# 4) HDBSCAN pass B → Child clusters within each parent (fine)
+# 4) HDBSCAN pass B → Child clusters within each parent (fine, adaptive per-parent params)
 # 5) GPT topic labels (parents then children) with concurrency + progress
 # 6) Visualisation (PCA scatter)
 # 7) Summaries (parents, then children)
@@ -36,9 +36,9 @@ from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_distances
 import plotly.express as px
 
-st.set_page_config(page_title="Topical Clustering (Fast • Hierarchical)", layout="wide")
-st.title("🧩 Topical Clustering (Fast • Hierarchical)")
-st.caption("Embeds the page-level cluster keyword • UMAP presets • HDBSCAN Parents→Children • GPT labels with progress")
+st.set_page_config(page_title="Topical Clustering (Fast • Hierarchical • Adaptive)", layout="wide")
+st.title("🧩 Topical Clustering (Fast • Hierarchical • Adaptive)")
+st.caption("Embeds the page-level cluster keyword • UMAP presets • HDBSCAN Parents→Children • Adaptive child params • GPT labels with progress")
 
 # ----------------------------- API key -----------------------------
 try:
@@ -103,16 +103,23 @@ with st.sidebar:
         st.session_state.cluster_selection_epsilon = d["epsilon"]
         st.session_state.last_preset_applied = umap_preset
 
-    st.header("Hierarchy Density")
+    st.header("Hierarchy Density (Base)")
     st.subheader("Parents (coarse)")
     min_cluster_size_parent = st.slider("Parent min size", 2, 200, 20)
     min_samples_parent      = st.slider("Parent min samples", 1, 10, 2)
     epsilon_parent          = st.slider("Parent ε (EoM gap-bridge)", 0.00, 0.20, 0.07, 0.01)
 
-    st.subheader("Children (fine)")
-    min_cluster_size_child = st.slider("Child min size", 2, 100, 8)
-    min_samples_child      = st.slider("Child min samples", 1, 10, 2)
-    epsilon_child          = st.slider("Child ε (EoM gap-bridge)", 0.00, 0.20, 0.04, 0.01)
+    st.subheader("Children (adaptive baseline)")
+    # Baseline values only used if adaptive derivation falls back; otherwise auto-scaled per parent
+    min_cluster_size_child_base = st.slider("Child base min size (floor/backup)", 2, 100, 8)
+    min_samples_child_base      = st.slider("Child base min samples (floor/backup)", 1, 10, 2)
+    epsilon_child_base          = st.slider("Child base ε (floor/backup)", 0.00, 0.20, 0.04, 0.01)
+
+    st.header("Adaptive Controls")
+    k_divisor     = st.slider("k_divisor (parent size ÷ k → child min size)", 6, 30, 12)
+    alpha_eps     = st.slider("α for ε (epsilon = α × median kNN dist)", 0.5, 1.5, 0.9, 0.05)
+    eps_low_bound = st.slider("ε lower bound", 0.00, 0.20, 0.01, 0.01)
+    eps_high_bound= st.slider("ε upper bound", 0.00, 0.20, 0.08, 0.01)
 
     st.header("Labelling")
     auto_label_topics = st.checkbox("Auto-label parents & children with GPT", value=True)
@@ -259,19 +266,88 @@ except Exception:
     st.code(traceback.format_exc())
     st.stop()
 
-# ----------------------------- HDBSCAN Pass B — Children per Parent -----------------------------
-st.subheader("5️⃣ HDBSCAN (Children — fine within each parent)")
+# ----------------------------- Adaptive helpers for child params -----------------------------
+def _median_knn_distance(X=None, k=10, metric="euclidean", precomputed_D=None):
+    """
+    Returns the median distance to the k-th nearest neighbour for all points.
+    For euclidean: supply X, metric='euclidean'.
+    For precomputed (cosine or other): supply precomputed_D (square), metric='precomputed'.
+    """
+    if metric == "precomputed":
+        D = precomputed_D
+        if D is None or D.size == 0:
+            return 0.0
+        knn_k = min(k + 1, D.shape[0])  # +1 to skip the 0 self-distance
+        sorted_rows = np.sort(D, axis=1)[:, :knn_k]
+        kth = sorted_rows[:, -1]
+        return float(np.median(kth))
+    else:
+        from sklearn.metrics import pairwise_distances
+        D = pairwise_distances(X, metric=metric)
+        knn_k = min(k + 1, D.shape[0])
+        sorted_rows = np.sort(D, axis=1)[:, :knn_k]
+        kth = sorted_rows[:, -1]
+        return float(np.median(kth))
+
+def derive_child_params_for_parent(parent_indices, *,
+                                   base_low_mcs=5, base_high_mcs=50,
+                                   k_divisor=12,  # larger -> smaller child clusters
+                                   metric="euclidean",
+                                   X_for_cluster=None,
+                                   distance_matrix=None,
+                                   alpha=0.9,
+                                   eps_low=0.01, eps_high=0.08):
+    """
+    Auto-scales child HDBSCAN params for a *single* parent.
+    Returns: (min_cluster_size_child_i, min_samples_child_i, epsilon_child_i, do_children)
+    """
+    n = len(parent_indices)
+    # 1) min_cluster_size scales with parent size
+    mcs = int(np.clip(round(n / k_divisor), base_low_mcs, base_high_mcs))
+
+    # 2) density proxy -> min_samples via median kNN distance
+    if metric == "euclidean":
+        X_sub = X_for_cluster[parent_indices]
+        med_knn = _median_knn_distance(X=X_sub, k=min(10, max(2, n - 1)), metric="euclidean")
+    else:
+        D_sub = distance_matrix[np.ix_(parent_indices, parent_indices)]
+        med_knn = _median_knn_distance(precomputed_D=D_sub, k=min(10, max(2, n - 1)), metric="precomputed")
+
+    if med_knn <= 0.15:
+        min_samples = 5
+    elif med_knn <= 0.25:
+        min_samples = 4
+    elif med_knn <= 0.35:
+        min_samples = 3
+    elif med_knn <= 0.50:
+        min_samples = 2
+    else:
+        min_samples = 1
+
+    # 3) epsilon from local spacing with bounds
+    epsilon = float(np.clip(alpha * med_knn, eps_low, eps_high))
+
+    # 4) stability floor: ensure a chance to form >1 child cluster
+    if n < 2 * mcs:
+        return mcs, min_samples, epsilon, False  # skip child clustering
+
+    return mcs, min_samples, epsilon, True
+
+# ----------------------------- HDBSCAN Pass B — Children per Parent (Adaptive) -----------------------------
+st.subheader("5️⃣ HDBSCAN (Children — adaptive per parent)")
+
 child_ids = np.full(len(df), -1, dtype=int)
 hdb_child_base_params = dict(
-    min_cluster_size=min_cluster_size_child,
-    min_samples=min_samples_child,
+    min_cluster_size=min_cluster_size_child_base,
+    min_samples=min_samples_child_base,
     cluster_selection_method="eom",
-    cluster_selection_epsilon=float(epsilon_child),
+    cluster_selection_epsilon=float(epsilon_child_base),
 )
-
 try:
-    next_child_base = 0  # ensures globally unique child ids (single int col)
+    next_child_base = 0  # ensures globally unique child ids
     unique_parents = sorted(set(labels_parent))
+    metric_child = "euclidean" if use_umap else "precomputed"
+
     for pid in unique_parents:
         if pid == -1:
             continue
@@ -279,22 +355,44 @@ try:
         if len(idx) == 0:
             continue
 
-        # If too small for a second clustering, bucket as one child
-        if len(idx) < hdb_child_base_params["min_cluster_size"]:
+        # Derive per-parent child params
+        mcs_i, ms_i, eps_i, do_children = derive_child_params_for_parent(
+            idx,
+            base_low_mcs=5, base_high_mcs=50,
+            k_divisor=k_divisor,
+            metric=metric_child,
+            X_for_cluster=X_for_cluster,
+            distance_matrix=distance_matrix,
+            alpha=alpha_eps,
+            eps_low=eps_low_bound, eps_high=eps_high_bound
+        )
+
+        # Optional: show what was derived for large parents
+        if len(idx) >= 50:
+            st.caption(f"Parent {pid}: size={len(idx)} → child mcs={mcs_i}, min_samples={ms_i}, ε={eps_i:.3f}")
+
+        if not do_children:
+            # Too small to split reliably -> bucket as a single child
             child_ids[idx] = next_child_base
             next_child_base += 1
             continue
 
+        child_params_local = dict(
+            min_cluster_size=mcs_i,
+            min_samples=ms_i,
+            cluster_selection_method="eom",
+            cluster_selection_epsilon=float(eps_i),
+            metric=metric_child
+        )
+
         if use_umap:
             X_sub = X_for_cluster[idx]
-            child_params = {**hdb_child_base_params, "metric": "euclidean"}
-            ch_local = hdbscan.HDBSCAN(**child_params).fit_predict(X_sub)
+            ch_local = hdbscan.HDBSCAN(**child_params_local).fit_predict(X_sub)
         else:
             D_sub = distance_matrix[np.ix_(idx, idx)]
-            child_params = {**hdb_child_base_params, "metric": "precomputed"}
-            ch_local = hdbscan.HDBSCAN(**child_params).fit_predict(D_sub)
+            ch_local = hdbscan.HDBSCAN(**child_params_local).fit_predict(D_sub)
 
-        # map local child labels to global unique ids
+        # Map local child labels to global ids
         unique_local = [c for c in sorted(set(ch_local)) if c != -1]
         mapping = {c: (next_child_base + i) for i, c in enumerate(unique_local)}
         child_ids[idx] = np.array([mapping.get(c, -1) for c in ch_local])
@@ -303,9 +401,9 @@ try:
     df["child_id"] = child_ids
     n_children = len(set(child_ids)) - (1 if -1 in child_ids else 0)
     noise_child_pct = (child_ids == -1).mean() * 100 if len(child_ids) else 0.0
-    st.success(f"✅ Child clusters: {n_children} • Child noise: {noise_child_pct:.1f}%")
+    st.success(f"✅ Child clusters: {n_children} • Child noise: {noise_child_pct:.1f}% (adaptive)")
 except Exception:
-    st.error("Error during HDBSCAN (children).")
+    st.error("Error during HDBSCAN (children, adaptive).")
     st.code(traceback.format_exc())
     st.stop()
 
@@ -374,7 +472,6 @@ try:
             )
             st.session_state.last_parent_hash = parent_hash
         else:
-            # Ensure column exists from previous run
             if "parent_label" not in df.columns and st.session_state.parent_labels_map:
                 df["parent_label"] = df["parent_id"].map(st.session_state.parent_labels_map).astype(str)
 
@@ -391,7 +488,6 @@ try:
         df["parent_label"] = df["parent_id"].astype(str)
         df["child_label"]  = df["child_id"].astype(str)
 
-    # If labels just created by label_groups, columns are already set.
     if "parent_label" not in df.columns:
         df["parent_label"] = df["parent_id"].map(st.session_state.parent_labels_map or {}).astype(str)
     if "child_label" not in df.columns:
@@ -416,7 +512,7 @@ try:
         color="parent_label",      # high-level color
         symbol="child_label",      # shape differentiates children
         hover_data=["parent_label", "child_label", "descriptive_name", "cluster", "keyword", "search volume"],
-        title="Parent & Child Topical Clusters (HDBSCAN EoM)",
+        title="Parent & Child Topical Clusters (HDBSCAN EoM, Adaptive Children)",
         width=1100, height=720
     )
     st.plotly_chart(fig, width="stretch")
@@ -467,12 +563,13 @@ try:
     })
 
     csv = export_df.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Download Hierarchical Topics CSV", csv, "hierarchical_topics.csv", "text/csv")
-    st.success("✅ Done! Use UMAP+parent params for structure; child params to surface subtopics.")
+    st.download_button("📥 Download Hierarchical Topics CSV", csv, "hierarchical_topics_adaptive.csv", "text/csv")
+    st.success("✅ Done! Adaptive children scale to each parent’s size & density. Adjust k_divisor/α/ε-bounds if you see over/under-splitting.")
 except Exception:
     st.error("Error while preparing the CSV export.")
     st.code(traceback.format_exc())
     st.stop()
+
 
 
 
