@@ -26,6 +26,7 @@ import streamlit as st
 import openai
 import hdbscan
 import concurrent.futures as cf
+import traceback
 from collections import deque
 
 from sklearn.preprocessing import normalize
@@ -149,11 +150,21 @@ if not file:
     st.info("Upload your CSV to begin.")
     st.stop()
 
-df_raw = pd.read_csv(file)
+try:
+    df_raw = pd.read_csv(file)
+except Exception:
+    st.error("Could not read CSV. Please check the file encoding/format.")
+    st.code(traceback.format_exc())
+    st.stop()
+
 df_raw.columns = [c.strip().lower() for c in df_raw.columns]
 required_cols = {"cluster", "keyword", "search volume"}
 if not required_cols.issubset(df_raw.columns):
     st.error("CSV must include columns: cluster, keyword, search volume (case-insensitive).")
+    st.stop()
+
+if len(df_raw) == 0:
+    st.warning("The CSV has no rows.")
     st.stop()
 
 st.success(f"✅ Loaded {len(df_raw)} page-level clusters.")
@@ -163,41 +174,77 @@ df_raw["descriptive_name"] = df_raw["cluster"].astype(str)
 
 # ----------------------------- Embeddings from `cluster` -----------------------------
 st.subheader("2️⃣ Generate embeddings (from `cluster`)")
+
 @st.cache_data(show_spinner=False)
 def embed_texts(texts):
     model = "text-embedding-3-large"  # locked
     vecs = []
+    # Defensive: convert Nones to empty strings
+    texts = [t if isinstance(t, str) else "" for t in texts]
     for i in range(0, len(texts), 100):
         batch = texts[i:i+100]
         resp = openai.embeddings.create(model=model, input=batch)
         vecs.extend([d.embedding for d in resp.data])
         time.sleep(0.10)
-    return np.array(vecs)
+    return np.array(vecs, dtype=np.float32)
 
-embeddings = embed_texts(df_raw["cluster"].fillna("").astype(str).tolist())
-embeddings = normalize(embeddings)
+try:
+    clusters_list = df_raw["cluster"].fillna("").astype(str).tolist()
+    if all(s.strip() == "" for s in clusters_list):
+        st.error("All `cluster` values are empty. Please provide non-empty cluster strings.")
+        st.stop()
+
+    embeddings = embed_texts(clusters_list)
+    if embeddings.size == 0 or embeddings.shape[0] != len(df_raw):
+        st.error("Failed to create embeddings. Please verify input data.")
+        st.stop()
+
+    # Normalize and basic NaN/Inf guard
+    embeddings = np.nan_to_num(embeddings, posinf=0.0, neginf=0.0)
+    embeddings = normalize(embeddings)
+except Exception:
+    st.error("Error while creating embeddings.")
+    st.code(traceback.format_exc())
+    st.stop()
+
 st.success(f"✅ Created {len(embeddings)} embeddings.")
 
 # ----------------------------- UMAP (presets) -----------------------------
 st.subheader("3️⃣ Smoothing (optional)")
 use_umap = (st.session_state.umap_preset != "Off")
-if use_umap:
-    from umap import UMAP
-    n_neighbors = PRESET_DEFAULTS[st.session_state.umap_preset]["umap_neighbors"]
-    n_components = PRESET_DEFAULTS[st.session_state.umap_preset]["umap_components"]
-    umap = UMAP(
-        n_neighbors=n_neighbors,
-        min_dist=0.0,
-        n_components=n_components,
-        metric="cosine",
-        random_state=42
-    )
-    X_for_cluster = umap.fit_transform(embeddings)
-    st.success(f"✅ UMAP applied (n_neighbors={n_neighbors}, n_components={n_components}).")
-else:
-    distance_matrix = cosine_distances(embeddings)
-    X_for_cluster = None
-    st.info("UMAP Off — using cosine distances directly.")
+
+X_for_cluster = None
+distance_matrix = None
+
+try:
+    if use_umap:
+        from umap import UMAP
+        n_neighbors = PRESET_DEFAULTS[st.session_state.umap_preset]["umap_neighbors"]
+        n_components = PRESET_DEFAULTS[st.session_state.umap_preset]["umap_components"]
+
+        # Guards for tiny datasets: ensure sensible sizes
+        n_samples = embeddings.shape[0]
+        if n_neighbors is not None:
+            n_neighbors = max(2, min(n_neighbors, max(2, n_samples - 1)))
+        if n_components is not None:
+            n_components = max(2, min(n_components, min(embeddings.shape[1], n_samples - 1)))
+
+        umap = UMAP(
+            n_neighbors=n_neighbors,
+            min_dist=0.0,
+            n_components=n_components,
+            metric="cosine",
+            random_state=42
+        )
+        X_for_cluster = umap.fit_transform(embeddings)
+        st.success(f"✅ UMAP applied (n_neighbors={n_neighbors}, n_components={n_components}).")
+    else:
+        distance_matrix = cosine_distances(embeddings)
+        st.info("UMAP Off — using cosine distances directly.")
+except Exception:
+    st.error("Error during UMAP smoothing.")
+    st.code(traceback.format_exc())
+    st.stop()
 
 # ----------------------------- HDBSCAN (EoM) -----------------------------
 st.subheader("4️⃣ HDBSCAN clustering")
@@ -208,21 +255,26 @@ hdb_params = dict(
     cluster_selection_epsilon=float(st.session_state.cluster_selection_epsilon)
 )
 
-if use_umap:
-    hdb_params["metric"] = "euclidean"
-    clusterer = hdbscan.HDBSCAN(**hdb_params)
-    labels = clusterer.fit_predict(X_for_cluster)
-else:
-    hdb_params["metric"] = "precomputed"
-    clusterer = hdbscan.HDBSCAN(**hdb_params)
-    labels = clusterer.fit_predict(distance_matrix)
+try:
+    if use_umap:
+        hdb_params["metric"] = "euclidean"
+        clusterer = hdbscan.HDBSCAN(**hdb_params)
+        labels = clusterer.fit_predict(X_for_cluster)
+    else:
+        hdb_params["metric"] = "precomputed"
+        clusterer = hdbscan.HDBSCAN(**hdb_params)
+        labels = clusterer.fit_predict(distance_matrix)
 
-df = df_raw.copy()
-df["topic_id"] = labels
+    df = df_raw.copy()
+    df["topic_id"] = labels
 
-n_topics = len(set(labels)) - (1 if -1 in labels else 0)
-noise_pct = (labels == -1).mean() * 100 if len(labels) else 0.0
-st.success(f"✅ Topics found: {n_topics} • Noise: {noise_pct:.1f}%")
+    n_topics = len(set(labels)) - (1 if -1 in labels else 0)
+    noise_pct = (labels == -1).mean() * 100 if len(labels) else 0.0
+    st.success(f"✅ Topics found: {n_topics} • Noise: {noise_pct:.1f}%")
+except Exception:
+    st.error("Error during HDBSCAN clustering.")
+    st.code(traceback.format_exc())
+    st.stop()
 
 # ----------------------------- Topic labelling (concurrent + progress) -----------------------------
 def label_topic_short(titles, model_name, temp):
@@ -242,50 +294,59 @@ def label_topic_short(titles, model_name, temp):
     )
     return resp.choices[0].message.content.strip()
 
-topic_hash = hashlib.md5(np.array(labels, dtype=np.int64).tobytes()).hexdigest()
+try:
+    topic_hash = hashlib.md5(np.array(labels, dtype=np.int64).tobytes()).hexdigest()
 
-should_label = False
-if auto_label_topics:
-    if st.session_state.last_topic_hash != topic_hash or relabel_now:
-        should_label = True
+    should_label = False
+    # Evaluate if we need to (re)label
+    auto_label_topics = 'auto_label_topics' in locals() and auto_label_topics
+    relabel_now = 'relabel_now' in locals() and relabel_now
 
-if should_label:
-    st.subheader("5️⃣ Topic labels (running)")
-    unique_topic_ids = sorted(set(df["topic_id"]))
-    if -1 in unique_topic_ids:
-        unique_topic_ids.remove(-1)
+    if auto_label_topics:
+        if st.session_state.last_topic_hash != topic_hash or relabel_now:
+            should_label = True
 
-    MAX_WORKERS = 12  # tune for your rate limits
-    ROLL_N = 20
-    progress = st.progress(0)
-    status = st.empty()
-    timings = deque(maxlen=ROLL_N)
-    labels_map = { -1: "Noise / Misc" }
-    done = 0
-    total = len(unique_topic_ids)
+    if should_label:
+        st.subheader("5️⃣ Topic labels (running)")
+        unique_topic_ids = sorted(set(df["topic_id"]))
+        if -1 in unique_topic_ids:
+            unique_topic_ids.remove(-1)
 
-    def label_one_cluster(tid):
-        start = time.time()
-        titles = df.loc[df["topic_id"] == tid, "descriptive_name"].tolist()
-        name = label_topic_short(titles, label_model, label_temp)
-        dur = time.time() - start
-        return tid, name, dur
+        MAX_WORKERS = max(1, min(12, len(unique_topic_ids)))  # cap workers sensibly
+        ROLL_N = 20
+        progress = st.progress(0)
+        status = st.empty()
+        timings = deque(maxlen=ROLL_N)
+        labels_map = { -1: "Noise / Misc" }
+        done = 0
+        total = len(unique_topic_ids)
 
-    with cf.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = [ex.submit(label_one_cluster, tid) for tid in unique_topic_ids]
-        for fut in cf.as_completed(futures):
-            tid, name, dur = fut.result()
-            labels_map[tid] = name
-            timings.append(dur)
-            done += 1
-            progress.progress(done / max(total, 1))
-            spc = float(np.mean(timings)) if len(timings) else 0.0
-            eta_sec = max(total - done, 0) * spc
-            status.text(f"Labelled {done}/{total} • avg {spc:.2f}s/label • ~ETA {int(eta_sec//60)}m {int(eta_sec%60)}s")
+        def label_one_cluster(tid):
+            start = time.time()
+            titles = df.loc[df["topic_id"] == tid, "descriptive_name"].tolist()
+            name = label_topic_short(titles, label_model, label_temp)
+            dur = time.time() - start
+            return tid, name, dur
 
-    st.session_state.topic_labels_map = labels_map
-    st.session_state.last_topic_hash = topic_hash
-    st.success("✅ Labelling complete.")
+        with cf.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            futures = [ex.submit(label_one_cluster, tid) for tid in unique_topic_ids]
+            for fut in cf.as_completed(futures):
+                tid, name, dur = fut.result()
+                labels_map[tid] = name
+                timings.append(dur)
+                done += 1
+                progress.progress(done / max(total, 1))
+                spc = float(np.mean(timings)) if len(timings) else 0.0
+                eta_sec = max(total - done, 0) * spc
+                status.text(f"Labelled {done}/{total} • avg {spc:.2f}s/label • ~ETA {int(eta_sec//60)}m {int(eta_sec%60)}s")
+
+        st.session_state.topic_labels_map = labels_map
+        st.session_state.last_topic_hash = topic_hash
+        st.success("✅ Labelling complete.")
+except Exception:
+    st.error("Error during topic labelling.")
+    st.code(traceback.format_exc())
+    st.stop()
 
 # Apply labels (cached if available)
 if st.session_state.topic_labels_map:
@@ -295,19 +356,25 @@ else:
 
 # ----------------------------- Visualisation -----------------------------
 st.subheader("6️⃣ Visualise topics (2D PCA)")
-pca = PCA(n_components=2)
-coords = pca.fit_transform(embeddings)
-df["x"] = coords[:, 0]
-df["y"] = coords[:, 1]
+try:
+    pca = PCA(n_components=2)
+    coords = pca.fit_transform(embeddings)
+    df["x"] = coords[:, 0]
+    df["y"] = coords[:, 1]
 
-fig = px.scatter(
-    df, x="x", y="y",
-    color="topic_label",
-    hover_data=["descriptive_name", "cluster", "keyword", "search volume"],
-    title="Topical Clusters (HDBSCAN EoM)",
-    width=1100, height=720
-)
-st.plotly_chart(fig, use_container_width=True)
+    fig = px.scatter(
+        df, x="x", y="y",
+        color="topic_label",
+        hover_data=["descriptive_name", "cluster", "keyword", "search volume"],
+        title="Topical Clusters (HDBSCAN EoM)",
+        width=1100, height=720
+    )
+    # Updated param: use width="stretch" instead of deprecated use_container_width
+    st.plotly_chart(fig, width="stretch")
+except Exception:
+    st.error("Error while rendering the PCA scatter plot.")
+    st.code(traceback.format_exc())
+    st.stop()
 
 # ----------------------------- Topics table (below viz) -------------------
 st.subheader("7️⃣ Topics table")
@@ -326,21 +393,33 @@ def topics_summary_table(frame):
         })
     return pd.DataFrame(rows).sort_values(["topic_id"])
 
-summary_df = topics_summary_table(df)
-st.dataframe(summary_df, use_container_width=True, height=420)
+try:
+    summary_df = topics_summary_table(df)
+    # Updated param: use width="stretch" instead of deprecated use_container_width
+    st.dataframe(summary_df, width="stretch", height=420)
+except Exception:
+    st.error("Error while building the topics table.")
+    st.code(traceback.format_exc())
+    st.stop()
 
 # ----------------------------- Export -----------------------------
 st.subheader("8️⃣ Export")
-# "Cluster (descriptive name)" mirrors `cluster` now (no LLM naming step)
-export_df = df.rename(columns={"descriptive_name": "Cluster (descriptive name)"})
-export_df = export_df[[
-    "topic_label", "Cluster (descriptive name)", "cluster", "keyword", "search volume"
-]].rename(columns={"topic_label": "Topic"})
+try:
+    # "Cluster (descriptive name)" mirrors `cluster` now (no LLM naming step)
+    export_df = df.rename(columns={"descriptive_name": "Cluster (descriptive name)"})
+    export_df = export_df[[
+        "topic_label", "Cluster (descriptive name)", "cluster", "keyword", "search volume"
+    ]].rename(columns={"topic_label": "Topic"})
 
-csv = export_df.to_csv(index=False).encode("utf-8")
-st.download_button("📥 Download Topics CSV", csv, "clustered_topics_with_clusters.csv", "text/csv")
+    csv = export_df.to_csv(index=False).encode("utf-8")
+    st.download_button("📥 Download Topics CSV", csv, "clustered_topics_with_clusters.csv", "text/csv")
+except Exception:
+    st.error("Error while preparing the CSV export.")
+    st.code(traceback.format_exc())
+    st.stop()
 
 st.success("✅ Done! Embedding from `cluster` speeds up large datasets. Use a UMAP preset to set sensible defaults, tweak, and hit “Re-label topics now” anytime.")
+
 
 
 
