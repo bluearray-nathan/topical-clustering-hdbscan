@@ -1,29 +1,8 @@
-# app.py — Simple Topical Clustering (Hierarchical + Adaptive) with Facet-Aware Labelling
+# app.py — Topical Clustering Tool
 # ----------------------------------------------------------------------------
-# Input CSV columns (required):
-#   - cluster (main page-level cluster keyword)
-#   - keyword (all keywords within that page-level cluster, e.g., comma-separated)
-#   - search volume (total search volume of the page-level cluster)
-#
-# Flow:
-# 1) Embeds ONLY the `cluster` text (OpenAI text-embedding-3-large, fixed)
-# 2) UMAP smoothing (always on; params set by PARENT granularity)
-# 3) HDBSCAN pass A → Parent clusters (coarse; driven by Parent granularity)
-# 4) HDBSCAN pass B → Child clusters within each parent (adaptive; driven by Child granularity)
-# 5) GPT topic labels (parents then children):
-#    • Diversified examples (cover sub-modes)
-#    • Facet summary (top unigrams/bigrams)
-#    • Guardrails to avoid over-specific labels
-#    • Configurable max words per label (default 8)
-# 6) Visualisation (PCA scatter) — parent label only
-# 7) Summaries + Export (no "Cluster (descriptive name)")
-#
-# Sidebar (simple):
-#   • Parent topic granularity
-#   • Child topic granularity
-#   • Max words per label
-#   • Auto-label + Re-label
-#   • (Optional) Advanced settings expander with detailed 'ⓘ' help
+# Adds a hierarchical topical structure to the page-level clustering output
+# from Keyword Insights. Groups similar clusters into Parent Topics and Child
+# Subtopics to help map out a potential information architecture.
 
 import time
 import math
@@ -46,9 +25,35 @@ import plotly.express as px
 
 random.seed(42)
 
-st.set_page_config(page_title="Topical Clustering (Simple • Hierarchical • Adaptive)", layout="wide")
-st.title("🧩 Topical Clustering (Simple • Hierarchical • Adaptive)")
-st.caption("Separate granularity for Parent & Child • UMAP • HDBSCAN Parents→Children (adaptive) • Facet-aware GPT labels")
+# ----------------------------- Page config & title -----------------------------
+st.set_page_config(page_title="Topical Clustering Tool", layout="wide")
+st.title("Topical Clustering Tool")
+
+# ----------------------------- Explanation (expandable) -----------------------------
+with st.expander("What this tool does and how it works"):
+    st.markdown("""
+**What it does**  
+Adds a **hierarchical topical structure** to the page-level clustering output from Keyword Insights.  
+It groups similar clusters into **Parent Topics** and **Child Subtopics**, helping you **map out a potential information architecture** and identify content themes or silos.
+
+---
+
+### How it works (simple)
+1. **Upload your CSV** — Uses your `cluster`, `keyword`, and `search volume` columns.  
+2. **Generate embeddings** — Converts each cluster into a vector so similar ones sit close together.  
+3. **Group into Parent Topics** — Finds broader themes using HDBSCAN clustering.  
+4. **Split into Child Subtopics** — Refines each parent group into smaller related topics.  
+5. **Label topics (GPT)** — Suggests short, descriptive names based on examples and common phrases.  
+6. **Visualise & export** — Displays Parent Topics on a 2D scatter plot and exports to CSV.
+
+---
+
+### Limitations (set expectations)
+- **Not perfect:** Clustering groups by textual similarity, not intent — manual review still helps.  
+- **Labels are suggestions:** GPT may simplify or generalise; rename as needed.  
+- **Input quality matters:** Ambiguous or repetitive names reduce accuracy.  
+- **Granularity trade-off:** Broader = cleaner but fewer topics; Finer = more detail but more noise.
+""")
 
 # ----------------------------- API key -----------------------------
 try:
@@ -67,7 +72,7 @@ if "last_parent_hash" not in st.session_state:
 if "last_child_hash" not in st.session_state:
     st.session_state.last_child_hash = None
 
-# ----------------------------- Sidebar (Simple + Explanations) -----------------------------
+# ----------------------------- Sidebar -----------------------------
 with st.sidebar:
     st.header("Setup")
     st.text("Embedding model")
@@ -90,7 +95,7 @@ with st.sidebar:
     )
 
     st.header("Labelling")
-    max_label_words = st.slider("Max words per label", 3, 12, 8,
+    max_label_words = st.slider("Max words per label", 3, 20, 8,
                                 help="Upper bound for words in each GPT-generated topic name.")
     auto_label_topics = st.checkbox("Auto-label topics with GPT", value=True,
                                     help="Automatically request GPT labels after clustering.")
@@ -99,11 +104,10 @@ with st.sidebar:
     label_temp = st.slider("Labelling creativity", 0.0, 1.0, 0.2, 0.05,
                            help="Higher = more creative names; lower = more conservative names.")
 
-    # ---- Preset libraries ----
+    # Preset configurations
     PARENT_PRESETS = {
-        # also drives UMAP smoothing
         "Fewer, broader topics": {
-            "umap": {"neighbors": 60, "components": 8},   # smoother, coarser space
+            "umap": {"neighbors": 60, "components": 8},
             "parent": {"min_cluster_size": 24, "min_samples": 2, "epsilon": 0.08},
         },
         "Balanced (recommended)": {
@@ -111,117 +115,44 @@ with st.sidebar:
             "parent": {"min_cluster_size": 16, "min_samples": 2, "epsilon": 0.06},
         },
         "More, finer subtopics": {
-            "umap": {"neighbors": 20, "components": 15},  # preserves finer structure
+            "umap": {"neighbors": 20, "components": 15},
             "parent": {"min_cluster_size": 10, "min_samples": 3, "epsilon": 0.04},
         },
     }
 
     CHILD_PRESETS = {
         "Fewer, broader subtopics": {
-            "child_base": {"mcs": 10, "ms": 2, "eps": 0.05},  # baseline if adaptive skipped
-            "adaptive":   {"k_divisor": 8, "alpha_eps": 0.90, "eps_low": 0.02, "eps_high": 0.10},
+            "child_base": {"mcs": 10, "ms": 2, "eps": 0.05},
+            "adaptive": {"k_divisor": 8, "alpha_eps": 0.90, "eps_low": 0.02, "eps_high": 0.10},
         },
         "Balanced (recommended)": {
             "child_base": {"mcs": 8, "ms": 2, "eps": 0.04},
-            "adaptive":   {"k_divisor": 12, "alpha_eps": 0.90, "eps_low": 0.01, "eps_high": 0.08},
+            "adaptive": {"k_divisor": 12, "alpha_eps": 0.90, "eps_low": 0.01, "eps_high": 0.08},
         },
         "More, finer subtopics": {
             "child_base": {"mcs": 6, "ms": 2, "eps": 0.03},
-            "adaptive":   {"k_divisor": 16, "alpha_eps": 0.85, "eps_low": 0.01, "eps_high": 0.06},
+            "adaptive": {"k_divisor": 16, "alpha_eps": 0.85, "eps_low": 0.01, "eps_high": 0.06},
         },
     }
 
     p_parent = PARENT_PRESETS[parent_granularity]
-    p_child  = CHILD_PRESETS[child_granularity]
+    p_child = CHILD_PRESETS[child_granularity]
 
-    # Values used later in the script
     UMAP_NEIGHBORS = p_parent["umap"]["neighbors"]
     UMAP_COMPONENTS = p_parent["umap"]["components"]
     min_cluster_size_parent = p_parent["parent"]["min_cluster_size"]
-    min_samples_parent      = p_parent["parent"]["min_samples"]
-    epsilon_parent          = p_parent["parent"]["epsilon"]
+    min_samples_parent = p_parent["parent"]["min_samples"]
+    epsilon_parent = p_parent["parent"]["epsilon"]
 
     min_cluster_size_child_base = p_child["child_base"]["mcs"]
-    min_samples_child_base      = p_child["child_base"]["ms"]
-    epsilon_child_base          = p_child["child_base"]["eps"]
-    k_divisor     = p_child["adaptive"]["k_divisor"]
-    alpha_eps     = p_child["adaptive"]["alpha_eps"]
+    min_samples_child_base = p_child["child_base"]["ms"]
+    epsilon_child_base = p_child["child_base"]["eps"]
+    k_divisor = p_child["adaptive"]["k_divisor"]
+    alpha_eps = p_child["adaptive"]["alpha_eps"]
     eps_low_bound = p_child["adaptive"]["eps_low"]
-    eps_high_bound= p_child["adaptive"]["eps_high"]
+    eps_high_bound = p_child["adaptive"]["eps_high"]
 
-    # ---------- Advanced settings with detailed 'ⓘ' help ----------
-    with st.expander("Advanced settings (optional)"):
-        st.caption("Defaults come from the chosen Parent/Child granularity. Adjust only if needed.")
-        UMAP_NEIGHBORS = st.number_input(
-            "UMAP neighbors",
-            min_value=2, max_value=200, value=int(UMAP_NEIGHBORS),
-            help="How many neighbors UMAP considers when smoothing the embedding space. "
-                 "Higher = smoother/coarser global structure (helps form broader parents). "
-                 "Lower = preserves local detail (helps finer parents)."
-        )
-        UMAP_COMPONENTS = st.number_input(
-            "UMAP components",
-            min_value=2, max_value=100, value=int(UMAP_COMPONENTS),
-            help="Dimensionality of the UMAP output space used for clustering. "
-                 "Higher can preserve more nuanced structure; too high can add noise."
-        )
-        min_cluster_size_parent = st.number_input(
-            "Parent min cluster size",
-            min_value=2, max_value=500, value=int(min_cluster_size_parent),
-            help="Smallest group HDBSCAN will consider a PARENT topic. "
-                 "Higher = fewer, broader parents; lower = more, smaller parents."
-        )
-        min_samples_parent = st.number_input(
-            "Parent min samples",
-            min_value=1, max_value=10, value=int(min_samples_parent),
-            help="How strict the density requirement is for PARENT topics. "
-                 "Higher = tighter, more confident groups (but may increase noise)."
-        )
-        epsilon_parent = st.number_input(
-            "Parent ε (gap-bridge)",
-            min_value=0.00, max_value=0.50, value=float(epsilon_parent), step=0.01,
-            help="HDBSCAN EoM epsilon: small values let the algorithm bridge tiny gaps to merge near-identical groups. "
-                 "Raise slightly to merge more; lower to keep parents more separate."
-        )
-        min_cluster_size_child_base = st.number_input(
-            "Child base min size",
-            min_value=2, max_value=200, value=int(min_cluster_size_child_base),
-            help="Fallback minimum size for CHILD clusters if adaptive splitting is skipped for a small parent."
-        )
-        min_samples_child_base = st.number_input(
-            "Child base min samples",
-            min_value=1, max_value=10, value=int(min_samples_child_base),
-            help="Fallback strictness for CHILD clustering if adaptive splitting is skipped."
-        )
-        epsilon_child_base = st.number_input(
-            "Child base ε (gap-bridge)",
-            min_value=0.00, max_value=0.50, value=float(epsilon_child_base), step=0.01,
-            help="Fallback epsilon for CHILD clustering when adaptive splitting is skipped."
-        )
-        k_divisor = st.number_input(
-            "Adaptive k_divisor (child)",
-            min_value=4, max_value=50, value=int(k_divisor),
-            help="Adaptive rule for CHILD min cluster size: parent_size ÷ k_divisor. "
-                 "Smaller k_divisor => larger child clusters; larger k_divisor => smaller child clusters."
-        )
-        alpha_eps = st.number_input(
-            "Adaptive α for ε (child)",
-            min_value=0.1, max_value=2.0, value=float(alpha_eps), step=0.05,
-            help="Scales median local spacing to set CHILD epsilon: ε_child = α × median_kNN_distance. "
-                 "Higher α merges more subgroups; lower α keeps them separate."
-        )
-        eps_low_bound = st.number_input(
-            "Adaptive ε lower bound (child)",
-            min_value=0.00, max_value=0.50, value=float(eps_low_bound), step=0.01,
-            help="Lower clamp for CHILD epsilon. Prevents ε from becoming too small to form reasonable children."
-        )
-        eps_high_bound = st.number_input(
-            "Adaptive ε upper bound (child)",
-            min_value=0.00, max_value=0.50, value=float(eps_high_bound), step=0.01,
-            help="Upper clamp for CHILD epsilon. Prevents ε from becoming too large and over-merging."
-        )
-
-# ----------------------------- File upload -----------------------------
+# ----------------------------- Upload data -----------------------------
 st.subheader("1️⃣ Upload your CSV")
 file = st.file_uploader("Upload a CSV with columns: cluster, keyword, search volume", type=["csv"])
 if not file:
@@ -246,7 +177,7 @@ if len(df_raw) == 0:
     st.stop()
 
 st.success(f"✅ Loaded {len(df_raw)} page-level clusters.")
-df_raw["descriptive_name"] = df_raw["cluster"].astype(str)  # no upfront LLM naming
+df_raw["descriptive_name"] = df_raw["cluster"].astype(str)
 
 # ----------------------------- Embeddings from `cluster` -----------------------------
 st.subheader("2️⃣ Generate embeddings (from `cluster`)")
@@ -558,7 +489,7 @@ def label_topic_short(titles_all, indices, embeddings, model_name, temp, max_wor
 def label_groups(df_in, id_col, label_col_name, label_model, label_temp, max_words,
                  embeddings, titles_all, total_max_examples=40, facets_top_k=10):
     unique_ids = [i for i in sorted(df_in[id_col].unique()) if i != -1]
-    labels_map = {-1: "Other"}  # <- renamed from "Noise / Misc" to "Other"
+    labels_map = {-1: "Other"}  # renamed from "Noise / Misc" to "Other"
     MAX_WORKERS = min(12, max(1, len(unique_ids)))
     progress = st.progress(0.0)
     status = st.empty()
@@ -656,7 +587,7 @@ try:
         title="Parent Topical Clusters (HDBSCAN EoM)",
         width=1100, height=720
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, use_container_width=True)
 except Exception:
     st.error("Error while rendering the PCA scatter plot.")
     st.code(traceback.format_exc())
@@ -672,7 +603,7 @@ try:
         .reset_index()
         .sort_values("size", ascending=False)
     )
-    st.dataframe(parent_summary, width="stretch", height=300)
+    st.dataframe(parent_summary, use_container_width=True, height=300)
 except Exception:
     st.error("Error while building the parent summary.")
     st.code(traceback.format_exc())
@@ -686,7 +617,7 @@ try:
         .reset_index()
         .sort_values(["parent_id", "size"], ascending=[True, False])
     )
-    st.dataframe(child_summary, width="stretch", height=420)
+    st.dataframe(child_summary, use_container_width=True, height=420)
 except Exception:
     st.error("Error while building the child summary.")
     st.code(traceback.format_exc())
@@ -694,7 +625,7 @@ except Exception:
 # ----------------------------- Export -----------------------------
 st.subheader("1️⃣1️⃣ Export")
 try:
-    # Removed "Cluster (descriptive name)" from the export
+    # Export excludes "Cluster (descriptive name)"
     export_df = df[[
         "parent_label", "child_label", "cluster", "keyword", "search volume"
     ]].rename(columns={
@@ -709,6 +640,7 @@ except Exception:
     st.error("Error while preparing the CSV export.")
     st.code(traceback.format_exc())
     st.stop()
+
 
 
 
