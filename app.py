@@ -15,8 +15,8 @@
 #    • Facet summary (top unigrams/bigrams)
 #    • Guardrails to avoid over-specific labels
 #    • Configurable max words per label (default 8)
-# 6) Visualisation (PCA scatter)
-# 7) Summaries + Export
+# 6) Visualisation (PCA scatter) — parent label only
+# 7) Summaries + Export (no "Cluster (descriptive name)")
 #
 # Sidebar (simple):
 #   • Parent topic granularity
@@ -40,7 +40,6 @@ from collections import deque
 
 from sklearn.preprocessing import normalize
 from sklearn.decomposition import PCA
-from sklearn.metrics.pairwise import cosine_distances
 from sklearn.cluster import KMeans
 from sklearn.feature_extraction.text import CountVectorizer
 import plotly.express as px
@@ -559,7 +558,7 @@ def label_topic_short(titles_all, indices, embeddings, model_name, temp, max_wor
 def label_groups(df_in, id_col, label_col_name, label_model, label_temp, max_words,
                  embeddings, titles_all, total_max_examples=40, facets_top_k=10):
     unique_ids = [i for i in sorted(df_in[id_col].unique()) if i != -1]
-    labels_map = {-1: "Noise / Misc"}
+    labels_map = {-1: "Other"}  # <- renamed from "Noise / Misc" to "Other"
     MAX_WORKERS = min(12, max(1, len(unique_ids)))
     progress = st.progress(0.0)
     status = st.empty()
@@ -631,9 +630,9 @@ try:
         df["child_label"]  = df["child_id"].astype(str)
 
     if "parent_label" not in df.columns:
-        df["parent_label"] = df["parent_id"].map(st.session_state.parent_labels_map or {}).astype(str)
+        df["parent_label"] = df["parent_id"].map(st.session_state.parent_labels_map or {-1: "Other"}).astype(str)
     if "child_label" not in df.columns:
-        df["child_label"] = df["child_id"].map(st.session_state.child_labels_map or {}).astype(str)
+        df["child_label"] = df["child_id"].map(st.session_state.child_labels_map or {-1: "Other"}).astype(str)
 
     st.success("✅ Labelling step complete.")
 except Exception:
@@ -649,12 +648,12 @@ try:
     df["x"] = coords[:, 0]
     df["y"] = coords[:, 1]
 
+    # Parent label only (no child symbol)
     fig = px.scatter(
         df, x="x", y="y",
         color="parent_label",
-        symbol="child_label",
-        hover_data=["parent_label", "child_label", "descriptive_name", "cluster", "keyword", "search volume"],
-        title="Parent & Child Topical Clusters (HDBSCAN EoM, Adaptive Children)",
+        hover_data=["parent_label", "descriptive_name", "cluster", "keyword", "search volume"],
+        title="Parent Topical Clusters (HDBSCAN EoM)",
         width=1100, height=720
     )
     st.plotly_chart(fig, width="stretch")
@@ -695,10 +694,9 @@ except Exception:
 # ----------------------------- Export -----------------------------
 st.subheader("1️⃣1️⃣ Export")
 try:
-    export_df = df.rename(columns={"descriptive_name": "Cluster (descriptive name)"})
-    export_df = export_df[[
-        "parent_label", "child_label", "Cluster (descriptive name)",
-        "cluster", "keyword", "search volume"
+    # Removed "Cluster (descriptive name)" from the export
+    export_df = df[[
+        "parent_label", "child_label", "cluster", "keyword", "search volume"
     ]].rename(columns={
         "parent_label": "Parent Topic",
         "child_label": "Child Topic"
@@ -706,7 +704,7 @@ try:
 
     csv = export_df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 Download Hierarchical Topics CSV", csv, "hierarchical_topics_simple.csv", "text/csv")
-    st.success("✅ Done! Choose Parent & Child granularities, upload CSV, and (optionally) label. Advanced settings include clear ‘ⓘ’ help.")
+    st.success("✅ Done! Export excludes 'Cluster (descriptive name)'. Noise groups are labelled 'Other'. Visualisation shows parent topics only.")
 except Exception:
     st.error("Error while preparing the CSV export.")
     st.code(traceback.format_exc())
