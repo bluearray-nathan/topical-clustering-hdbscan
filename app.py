@@ -1,4 +1,4 @@
-# app.py — Fast Hierarchical Topic Clustering (Adaptive) + Scalable, Facet-Aware Labelling
+# app.py — Simple Topical Clustering (Hierarchical + Adaptive) with Facet-Aware Labelling
 # ----------------------------------------------------------------------------
 # Input CSV columns (required):
 #   - cluster (main page-level cluster keyword)
@@ -7,19 +7,22 @@
 #
 # Flow:
 # 1) Embeds ONLY the `cluster` text (OpenAI text-embedding-3-large, fixed)
-# 2) Optional UMAP smoothing via presets (Off/Broad/Balanced/Detailed)
+# 2) UMAP smoothing (always on; params set by granularity)
 # 3) HDBSCAN pass A → Parent clusters (coarse)
 # 4) HDBSCAN pass B → Child clusters within each parent (fine, adaptive per-parent params)
-# 5) GPT topic labels (parents then children) with concurrency + progress
-#    • Scalable labelling: diversified examples + facet summary + guardrails
+# 5) GPT topic labels (parents then children), using:
+#    • Diversified examples (cover sub-modes)
+#    • Facet summary (top unigrams/bigrams)
+#    • Guardrails to avoid over-specific labels
 #    • Configurable max words per label (default 8)
 # 6) Visualisation (PCA scatter)
-# 7) Summaries (parents, then children)
-# 8) Export: Parent Topic, Child Topic, Cluster (descriptive name), cluster, keyword, search volume
+# 7) Summaries + Export
 #
-# Notes:
-# - Streamlit deprecation: use width="stretch" instead of use_container_width.
-# - Robust error surfacing with visible tracebacks.
+# Sidebar (simple):
+#   • Topic granularity: Fewer/Balanced/More (sets all params)
+#   • Max words per label
+#   • Auto-label + Re-label
+#   • (Optional) Advanced settings expander
 
 import time
 import math
@@ -32,21 +35,20 @@ import hdbscan
 import concurrent.futures as cf
 import traceback
 import random
-import re
 from collections import deque
 
 from sklearn.preprocessing import normalize
 from sklearn.decomposition import PCA
-from sklearn.metrics.pairwise import cosine_distances
+from sklearn.metrics.pairwise import cosine_distances  # used by facet helpers if needed
 from sklearn.cluster import KMeans
 from sklearn.feature_extraction.text import CountVectorizer
 import plotly.express as px
 
 random.seed(42)
 
-st.set_page_config(page_title="Topical Clustering (Fast • Hierarchical • Adaptive)", layout="wide")
-st.title("🧩 Topical Clustering (Fast • Hierarchical • Adaptive)")
-st.caption("Embeds the page-level cluster keyword • UMAP presets • HDBSCAN Parents→Children • Adaptive child params • Scalable GPT labels")
+st.set_page_config(page_title="Topical Clustering (Simple • Hierarchical • Adaptive)", layout="wide")
+st.title("🧩 Topical Clustering (Simple • Hierarchical • Adaptive)")
+st.caption("Granularity presets • UMAP • HDBSCAN Parents→Children (adaptive) • Facet-aware GPT labels")
 
 # ----------------------------- API key -----------------------------
 try:
@@ -55,27 +57,7 @@ except Exception:
     st.error("❌ Missing OpenAI API key. Add it in Streamlit Cloud Secrets:\n\n[openai]\napi_key = \"sk-...\"")
     st.stop()
 
-# ----------------------------- Preset defaults -----------------------------
-PRESET_DEFAULTS = {
-    "Off":      {"min_cluster_size": 10, "min_samples": 2, "epsilon": 0.05, "umap_neighbors": None, "umap_components": None},
-    "Broad":    {"min_cluster_size": 12, "min_samples": 1, "epsilon": 0.06, "umap_neighbors": 50, "umap_components": 8},
-    "Balanced": {"min_cluster_size": 10, "min_samples": 2, "epsilon": 0.05, "umap_neighbors": 40, "umap_components": 10},
-    "Detailed": {"min_cluster_size": 8,  "min_samples": 3, "epsilon": 0.03, "umap_neighbors": 20, "umap_components": 15},
-}
-
-# Initialize session state
-if "umap_preset" not in st.session_state:
-    st.session_state.umap_preset = "Balanced"
-if "last_preset_applied" not in st.session_state:
-    st.session_state.last_preset_applied = None
-if "min_cluster_size" not in st.session_state:
-    st.session_state.min_cluster_size = PRESET_DEFAULTS["Balanced"]["min_cluster_size"]
-if "min_samples" not in st.session_state:
-    st.session_state.min_samples = PRESET_DEFAULTS["Balanced"]["min_samples"]
-if "cluster_selection_epsilon" not in st.session_state:
-    st.session_state.cluster_selection_epsilon = PRESET_DEFAULTS["Balanced"]["epsilon"]
-
-# Label maps & hashes
+# ----------------------------- Session init for label caches -----------------------------
 if "parent_labels_map" not in st.session_state:
     st.session_state.parent_labels_map = {}
 if "child_labels_map" not in st.session_state:
@@ -85,65 +67,79 @@ if "last_parent_hash" not in st.session_state:
 if "last_child_hash" not in st.session_state:
     st.session_state.last_child_hash = None
 
-# ----------------------------- Sidebar controls -----------------------------
+# ----------------------------- Sidebar (Simple) -----------------------------
 with st.sidebar:
-    st.header("Embedding")
+    st.header("Setup")
     st.text("Embedding model")
     st.code("text-embedding-3-large", language="text")
 
-    st.header("UMAP Smoothing")
-    umap_preset = st.selectbox(
-        "Preset",
-        options=["Off", "Broad", "Balanced", "Detailed"],
-        index=["Off", "Broad", "Balanced", "Detailed"].index(st.session_state.umap_preset),
-        help=(
-            "UMAP compresses the embedding space so related items sit closer together.\n"
-            "• Broad: fewer, bigger topics, least noise (size=12, samples=1, ε=0.06)\n"
-            "• Balanced: general use (size=10, samples=2, ε=0.05)\n"
-            "• Detailed: more subtopics, possibly more noise (size=8, samples=3, ε=0.03)"
-        )
+    st.header("Topic granularity")
+    granularity = st.radio(
+        "How detailed should the topics be?",
+        options=["Fewer, broader topics", "Balanced (recommended)", "More, finer subtopics"],
+        index=1,
+        help="This sets all clustering and smoothing parameters under the hood."
     )
-    if umap_preset != st.session_state.last_preset_applied:
-        st.session_state.umap_preset = umap_preset
-        d = PRESET_DEFAULTS[umap_preset]
-        st.session_state.min_cluster_size = d["min_cluster_size"]
-        st.session_state.min_samples = d["min_samples"]
-        st.session_state.cluster_selection_epsilon = d["epsilon"]
-        st.session_state.last_preset_applied = umap_preset
-
-    st.header("Hierarchy Density (Base)")
-    st.subheader("Parents (coarse)")
-    min_cluster_size_parent = st.slider("Parent min size", 2, 200, 20)
-    min_samples_parent      = st.slider("Parent min samples", 1, 10, 2)
-    epsilon_parent          = st.slider("Parent ε (EoM gap-bridge)", 0.00, 0.20, 0.07, 0.01)
-
-    st.subheader("Children (adaptive baseline)")
-    # Baseline values used if adaptive derivation falls back; otherwise auto-scaled per parent
-    min_cluster_size_child_base = st.slider("Child base min size (floor/backup)", 2, 100, 8)
-    min_samples_child_base      = st.slider("Child base min samples (floor/backup)", 1, 10, 2)
-    epsilon_child_base          = st.slider("Child base ε (floor/backup)", 0.00, 0.20, 0.04, 0.01)
-
-    st.header("Adaptive Controls")
-    k_divisor     = st.slider("k_divisor (parent size ÷ k → child min size)", 6, 30, 12)
-    alpha_eps     = st.slider("α for ε (epsilon = α × median kNN dist)", 0.5, 1.5, 0.9, 0.05)
-    eps_low_bound = st.slider("ε lower bound", 0.00, 0.20, 0.01, 0.01)
-    eps_high_bound= st.slider("ε upper bound", 0.00, 0.20, 0.08, 0.01)
 
     st.header("Labelling")
-    # Configurable max words per label
     max_label_words = st.slider("Max words per label", 3, 12, 8)
-    auto_label_topics = st.checkbox("Auto-label parents & children with GPT", value=True)
+    auto_label_topics = st.checkbox("Auto-label topics with GPT", value=True)
     relabel_now = st.button("🔁 Re-label now")
     label_model = "gpt-4o-mini-2024-07-18"
     label_temp = st.slider("Labelling creativity", 0.0, 1.0, 0.2, 0.05)
 
-    with st.expander("Throughput helper (what-if)"):
-        n_est = st.number_input("Groups to label", 1, 100000, value=1000, step=1)
-        conc_est = st.slider("Concurrency (workers)", 1, 32, value=12)
-        avg_est = st.number_input("Avg seconds per label (observed)", 0.1, 60.0, value=1.8, step=0.1)
-        batches = math.ceil(n_est / conc_est)
-        est_sec = batches * avg_est
-        st.caption(f"Naive parallel wall-time ≈ {int(est_sec//60)}m {int(est_sec%60)}s (depends on rate limits/retries)")
+    # ---- Granularity presets: UMAP + Parent + Child (baseline) + Adaptive ----
+    PRESETS_SIMPLE = {
+        "Fewer, broader topics": {
+            "umap": {"neighbors": 60, "components": 8},
+            "parent": {"min_cluster_size": 24, "min_samples": 2, "epsilon": 0.08},
+            "child_base": {"mcs": 10, "ms": 2, "eps": 0.05},
+            "adaptive": {"k_divisor": 8, "alpha_eps": 0.90, "eps_low": 0.02, "eps_high": 0.10},
+        },
+        "Balanced (recommended)": {
+            "umap": {"neighbors": 40, "components": 10},
+            "parent": {"min_cluster_size": 16, "min_samples": 2, "epsilon": 0.06},
+            "child_base": {"mcs": 8, "ms": 2, "eps": 0.04},
+            "adaptive": {"k_divisor": 12, "alpha_eps": 0.90, "eps_low": 0.01, "eps_high": 0.08},
+        },
+        "More, finer subtopics": {
+            "umap": {"neighbors": 20, "components": 15},
+            "parent": {"min_cluster_size": 10, "min_samples": 3, "epsilon": 0.04},
+            "child_base": {"mcs": 6, "ms": 2, "eps": 0.03},
+            "adaptive": {"k_divisor": 16, "alpha_eps": 0.85, "eps_low": 0.01, "eps_high": 0.06},
+        },
+    }
+    p = PRESETS_SIMPLE[granularity]
+
+    # Values used later in the script
+    UMAP_NEIGHBORS = p["umap"]["neighbors"]
+    UMAP_COMPONENTS = p["umap"]["components"]
+    min_cluster_size_parent = p["parent"]["min_cluster_size"]
+    min_samples_parent      = p["parent"]["min_samples"]
+    epsilon_parent          = p["parent"]["epsilon"]
+    min_cluster_size_child_base = p["child_base"]["mcs"]
+    min_samples_child_base      = p["child_base"]["ms"]
+    epsilon_child_base          = p["child_base"]["eps"]
+    k_divisor     = p["adaptive"]["k_divisor"]
+    alpha_eps     = p["adaptive"]["alpha_eps"]
+    eps_low_bound = p["adaptive"]["eps_low"]
+    eps_high_bound= p["adaptive"]["eps_high"]
+
+    # ---------- Optional: Advanced settings for power users ----------
+    with st.expander("Advanced settings (optional)"):
+        st.caption("Defaults come from the chosen granularity. Adjust only if needed.")
+        UMAP_NEIGHBORS = st.number_input("UMAP neighbors", 2, 200, UMAP_NEIGHBORS, help="Larger → broader structure.")
+        UMAP_COMPONENTS = st.number_input("UMAP components", 2, 100, UMAP_COMPONENTS, help="Higher can preserve finer detail.")
+        min_cluster_size_parent = st.number_input("Parent min size", 2, 500, min_cluster_size_parent)
+        min_samples_parent      = st.number_input("Parent min samples", 1, 10, min_samples_parent)
+        epsilon_parent          = st.number_input("Parent ε", 0.00, 0.50, epsilon_parent, step=0.01)
+        min_cluster_size_child_base = st.number_input("Child base min size", 2, 200, min_cluster_size_child_base)
+        min_samples_child_base      = st.number_input("Child base min samples", 1, 10, min_samples_child_base)
+        epsilon_child_base          = st.number_input("Child base ε", 0.00, 0.50, epsilon_child_base, step=0.01)
+        k_divisor     = st.number_input("Adaptive k_divisor", 4, 50, k_divisor)
+        alpha_eps     = st.number_input("Adaptive α (for ε)", 0.1, 2.0, alpha_eps, step=0.05)
+        eps_low_bound = st.number_input("Adaptive ε lower bound", 0.00, 0.50, eps_low_bound, step=0.01)
+        eps_high_bound= st.number_input("Adaptive ε upper bound", 0.00, 0.50, eps_high_bound, step=0.01)
 
 # ----------------------------- File upload -----------------------------
 st.subheader("1️⃣ Upload your CSV")
@@ -170,23 +166,21 @@ if len(df_raw) == 0:
     st.stop()
 
 st.success(f"✅ Loaded {len(df_raw)} page-level clusters.")
-
-# No LLM naming — descriptive_name == cluster (kept for downstream consistency/export)
-df_raw["descriptive_name"] = df_raw["cluster"].astype(str)
+df_raw["descriptive_name"] = df_raw["cluster"].astype(str)  # no LLM naming upfront
 
 # ----------------------------- Embeddings from `cluster` -----------------------------
 st.subheader("2️⃣ Generate embeddings (from `cluster`)")
 
 @st.cache_data(show_spinner=False)
 def embed_texts(texts):
-    model = "text-embedding-3-large"  # locked
+    model = "text-embedding-3-large"
     vecs = []
     texts = [t if isinstance(t, str) else "" for t in texts]
     for i in range(0, len(texts), 100):
         batch = texts[i:i+100]
         resp = openai.embeddings.create(model=model, input=batch)
         vecs.extend([d.embedding for d in resp.data])
-        time.sleep(0.10)
+        time.sleep(0.10)  # simple pacing
     return np.array(vecs, dtype=np.float32)
 
 try:
@@ -200,9 +194,8 @@ try:
         st.error("Failed to create embeddings. Please verify input data.")
         st.stop()
 
-    # Normalize and basic NaN/Inf guard
     embeddings = np.nan_to_num(embeddings, posinf=0.0, neginf=0.0)
-    embeddings = normalize(embeddings)
+    embeddings = normalize(embeddings)  # cosine-friendly
 except Exception:
     st.error("Error while creating embeddings.")
     st.code(traceback.format_exc())
@@ -210,38 +203,23 @@ except Exception:
 
 st.success(f"✅ Created {len(embeddings)} embeddings.")
 
-# ----------------------------- UMAP (presets) -----------------------------
-st.subheader("3️⃣ Smoothing (optional)")
-use_umap = (st.session_state.umap_preset != "Off")
-
-X_for_cluster = None
-distance_matrix = None
-
+# ----------------------------- UMAP (always on; set by granularity) -----------------------------
+st.subheader("3️⃣ Smoothing (UMAP)")
 try:
-    if use_umap:
-        from umap import UMAP
-        n_neighbors = PRESET_DEFAULTS[st.session_state.umap_preset]["umap_neighbors"]
-        n_components = PRESET_DEFAULTS[st.session_state.umap_preset]["umap_components"]
+    from umap import UMAP
+    n_samples = embeddings.shape[0]
+    n_neighbors = int(max(2, min(int(UMAP_NEIGHBORS), max(2, n_samples - 1))))
+    n_components = int(max(2, min(int(UMAP_COMPONENTS), min(embeddings.shape[1], max(2, n_samples - 1)))))
 
-        # Guards for tiny datasets: ensure sensible sizes
-        n_samples = embeddings.shape[0]
-        if n_neighbors is not None:
-            n_neighbors = max(2, min(n_neighbors, max(2, n_samples - 1)))
-        if n_components is not None:
-            n_components = max(2, min(n_components, min(embeddings.shape[1], n_samples - 1)))
-
-        umap = UMAP(
-            n_neighbors=n_neighbors,
-            min_dist=0.0,
-            n_components=n_components,
-            metric="cosine",
-            random_state=42
-        )
-        X_for_cluster = umap.fit_transform(embeddings)
-        st.success(f"✅ UMAP applied (n_neighbors={n_neighbors}, n_components={n_components}).")
-    else:
-        distance_matrix = cosine_distances(embeddings)
-        st.info("UMAP Off — using cosine distances directly.")
+    umap = UMAP(
+        n_neighbors=n_neighbors,
+        min_dist=0.0,
+        n_components=n_components,
+        metric="cosine",
+        random_state=42
+    )
+    X_for_cluster = umap.fit_transform(embeddings)
+    st.success(f"✅ UMAP applied (neighbors={n_neighbors}, components={n_components}).")
 except Exception:
     st.error("Error during UMAP smoothing.")
     st.code(traceback.format_exc())
@@ -250,21 +228,16 @@ except Exception:
 # ----------------------------- HDBSCAN Pass A — Parents -----------------------------
 st.subheader("4️⃣ HDBSCAN (Parents — coarse)")
 hdb_parent = dict(
-    min_cluster_size=min_cluster_size_parent,
-    min_samples=min_samples_parent,
+    min_cluster_size=int(min_cluster_size_parent),
+    min_samples=int(min_samples_parent),
     cluster_selection_method="eom",
     cluster_selection_epsilon=float(epsilon_parent),
+    metric="euclidean"
 )
 
 try:
-    if use_umap:
-        hdb_parent["metric"] = "euclidean"
-        parenter = hdbscan.HDBSCAN(**hdb_parent)
-        labels_parent = parenter.fit_predict(X_for_cluster)
-    else:
-        hdb_parent["metric"] = "precomputed"
-        parenter = hdbscan.HDBSCAN(**hdb_parent)
-        labels_parent = parenter.fit_predict(distance_matrix)
+    parenter = hdbscan.HDBSCAN(**hdb_parent)
+    labels_parent = parenter.fit_predict(X_for_cluster)
 
     df = df_raw.copy()
     df["parent_id"] = labels_parent
@@ -277,38 +250,25 @@ except Exception:
     st.stop()
 
 # ----------------------------- Adaptive helpers for child params -----------------------------
-def _median_knn_distance(X=None, k=10, metric="euclidean", precomputed_D=None):
+def _median_knn_distance(X, k=10):
     """
-    Returns the median distance to the k-th nearest neighbour for all points.
-    For euclidean: supply X, metric='euclidean'.
-    For precomputed (cosine or other): supply precomputed_D (square), metric='precomputed'.
+    Median distance to the k-th nearest neighbour (euclidean) for X.
     """
-    if metric == "precomputed":
-        D = precomputed_D
-        if D is None or D.size == 0:
-            return 0.0
-        knn_k = min(k + 1, D.shape[0])  # +1 to skip the 0 self-distance
-        sorted_rows = np.sort(D, axis=1)[:, :knn_k]
-        kth = sorted_rows[:, -1]
-        return float(np.median(kth))
-    else:
-        from sklearn.metrics import pairwise_distances
-        D = pairwise_distances(X, metric=metric)
-        knn_k = min(k + 1, D.shape[0])
-        sorted_rows = np.sort(D, axis=1)[:, :knn_k]
-        kth = sorted_rows[:, -1]
-        return float(np.median(kth))
+    from sklearn.metrics import pairwise_distances
+    D = pairwise_distances(X, metric="euclidean")
+    knn_k = min(k + 1, D.shape[0])  # +1 to include self; we'll take the last among the first k+1 sorted
+    sorted_rows = np.sort(D, axis=1)[:, :knn_k]
+    kth = sorted_rows[:, -1]
+    return float(np.median(kth))
 
 def derive_child_params_for_parent(parent_indices, *,
                                    base_low_mcs=5, base_high_mcs=50,
-                                   k_divisor=12,  # larger -> smaller child clusters
-                                   metric="euclidean",
+                                   k_divisor=12,
                                    X_for_cluster=None,
-                                   distance_matrix=None,
                                    alpha=0.9,
                                    eps_low=0.01, eps_high=0.08):
     """
-    Auto-scales child HDBSCAN params for a *single* parent.
+    Auto-scales child HDBSCAN params for a *single* parent (UMAP euclidean space).
     Returns: (min_cluster_size_child_i, min_samples_child_i, epsilon_child_i, do_children)
     """
     n = len(parent_indices)
@@ -316,12 +276,8 @@ def derive_child_params_for_parent(parent_indices, *,
     mcs = int(np.clip(round(n / k_divisor), base_low_mcs, base_high_mcs))
 
     # 2) density proxy -> min_samples via median kNN distance
-    if metric == "euclidean":
-        X_sub = X_for_cluster[parent_indices]
-        med_knn = _median_knn_distance(X=X_sub, k=min(10, max(2, n - 1)), metric="euclidean")
-    else:
-        D_sub = distance_matrix[np.ix_(parent_indices, parent_indices)]
-        med_knn = _median_knn_distance(precomputed_D=D_sub, k=min(10, max(2, n - 1)), metric="precomputed")
+    X_sub = X_for_cluster[parent_indices]
+    med_knn = _median_knn_distance(X_sub, k=min(10, max(2, n - 1)))
 
     if med_knn <= 0.15:
         min_samples = 5
@@ -337,7 +293,7 @@ def derive_child_params_for_parent(parent_indices, *,
     # 3) epsilon from local spacing with bounds
     epsilon = float(np.clip(alpha * med_knn, eps_low, eps_high))
 
-    # 4) stability floor: ensure a chance to form >1 child cluster
+    # 4) stability floor
     if n < 2 * mcs:
         return mcs, min_samples, epsilon, False  # skip child clustering
 
@@ -345,18 +301,11 @@ def derive_child_params_for_parent(parent_indices, *,
 
 # ----------------------------- HDBSCAN Pass B — Children per Parent (Adaptive) -----------------------------
 st.subheader("5️⃣ HDBSCAN (Children — adaptive per parent)")
-
 child_ids = np.full(len(df), -1, dtype=int)
-hdb_child_base_params = dict(
-    min_cluster_size=min_cluster_size_child_base,
-    min_samples=min_samples_child_base,
-    cluster_selection_method="eom",
-    cluster_selection_epsilon=float(epsilon_child_base),
-)
+
 try:
     next_child_base = 0  # ensures globally unique child ids
     unique_parents = sorted(set(labels_parent))
-    metric_child = "euclidean" if use_umap else "precomputed"
 
     for pid in unique_parents:
         if pid == -1:
@@ -365,21 +314,23 @@ try:
         if len(idx) == 0:
             continue
 
-        # Derive per-parent child params
-        mcs_i, ms_i, eps_i, do_children = derive_child_params_for_parent(
-            idx,
-            base_low_mcs=5, base_high_mcs=50,
-            k_divisor=k_divisor,
-            metric=metric_child,
-            X_for_cluster=X_for_cluster,
-            distance_matrix=distance_matrix,
-            alpha=alpha_eps,
-            eps_low=eps_low_bound, eps_high=eps_high_bound
-        )
-
-        # Optional: show what was derived for large parents
-        if len(idx) >= 50:
-            st.caption(f"Parent {pid}: size={len(idx)} → child mcs={mcs_i}, min_samples={ms_i}, ε={eps_i:.3f}")
+        # Derive per-parent child params; fallback baseline if anything odd happens
+        try:
+            mcs_i, ms_i, eps_i, do_children = derive_child_params_for_parent(
+                idx,
+                base_low_mcs=5, base_high_mcs=50,
+                k_divisor=int(k_divisor),
+                X_for_cluster=X_for_cluster,
+                alpha=float(alpha_eps),
+                eps_low=float(eps_low_bound), eps_high=float(eps_high_bound)
+            )
+        except Exception:
+            mcs_i, ms_i, eps_i, do_children = (
+                int(min_cluster_size_child_base),
+                int(min_samples_child_base),
+                float(epsilon_child_base),
+                len(idx) >= 2 * int(min_cluster_size_child_base),
+            )
 
         if not do_children:
             # Too small to split reliably -> bucket as a single child
@@ -388,19 +339,14 @@ try:
             continue
 
         child_params_local = dict(
-            min_cluster_size=mcs_i,
-            min_samples=ms_i,
+            min_cluster_size=int(mcs_i),
+            min_samples=int(ms_i),
             cluster_selection_method="eom",
             cluster_selection_epsilon=float(eps_i),
-            metric=metric_child
+            metric="euclidean"
         )
 
-        if use_umap:
-            X_sub = X_for_cluster[idx]
-            ch_local = hdbscan.HDBSCAN(**child_params_local).fit_predict(X_sub)
-        else:
-            D_sub = distance_matrix[np.ix_(idx, idx)]
-            ch_local = hdbscan.HDBSCAN(**child_params_local).fit_predict(D_sub)
+        ch_local = hdbscan.HDBSCAN(**child_params_local).fit_predict(X_for_cluster[idx])
 
         # Map local child labels to global ids
         unique_local = [c for c in sorted(set(ch_local)) if c != -1]
@@ -421,7 +367,6 @@ except Exception:
 def top_facets(texts, top_k=10, ngram_range=(1,2), min_df=1, token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z\-]+\b"):
     """
     Returns a list of (phrase, count) for salient unigrams/bigrams in `texts`.
-    Language-agnostic-ish; tune token_pattern/stop_words for your locale.
     """
     if not texts:
         return []
@@ -448,10 +393,7 @@ def facets_block(facets, max_lines=8):
 
 def diversified_examples(indices, titles_all, embeddings, total_max=40):
     """
-    Select representative examples covering sub-modes:
-    1) If small cluster, return all.
-    2) Else cluster the vectors (k ~ sqrt(n) bounded) and take medoid-ish exemplars per centroid.
-    3) If still room, top-up with random unseen items.
+    Select representative examples covering sub-modes using KMeans over the cluster slice.
     """
     n = len(indices)
     if n <= total_max:
@@ -491,15 +433,15 @@ def label_topic_short(titles_all, indices, embeddings, model_name, temp, max_wor
     indices: np.array/list of absolute row indices belonging to the cluster to label
     embeddings: np.ndarray of all row embeddings (already normalized)
     """
-    # 1) Build a diverse sample from within this cluster
+    # 1) Diverse sample
     sample = diversified_examples(indices, titles_all, embeddings, total_max=total_max_examples)
 
-    # 2) Compute facet distribution (unigram/bigram counts) for this cluster
+    # 2) Facet distribution
     cluster_texts = [titles_all[i] for i in indices]
     facets = top_facets(cluster_texts, top_k=facets_top_k)
     facts = facets_block(facets)
 
-    # 3) Guardrails to avoid over-specific labels unless a facet truly dominates
+    # 3) Guardrails
     dominance_rule = (
         "Name the topic to reflect the overall cluster. "
         "If multiple distinct facets (e.g., locations, formats, levels, audiences, industries) are present, "
@@ -526,7 +468,7 @@ def label_topic_short(titles_all, indices, embeddings, model_name, temp, max_wor
     )
     text = resp.choices[0].message.content.strip()
 
-    # enforce word cap (light post-process)
+    # enforce word cap
     words = text.split()
     if len(words) > max_words:
         text = " ".join(words[:max_words])
@@ -627,8 +569,8 @@ try:
 
     fig = px.scatter(
         df, x="x", y="y",
-        color="parent_label",      # high-level color
-        symbol="child_label",      # shape differentiates children
+        color="parent_label",
+        symbol="child_label",
         hover_data=["parent_label", "child_label", "descriptive_name", "cluster", "keyword", "search volume"],
         title="Parent & Child Topical Clusters (HDBSCAN EoM, Adaptive Children)",
         width=1100, height=720
@@ -681,8 +623,8 @@ try:
     })
 
     csv = export_df.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Download Hierarchical Topics CSV", csv, "hierarchical_topics_adaptive.csv", "text/csv")
-    st.success("✅ Done! Adaptive children scale to each parent’s size & density. Labelling now uses diversified examples + facet summaries to avoid over-specific names.")
+    st.download_button("📥 Download Hierarchical Topics CSV", csv, "hierarchical_topics_simple.csv", "text/csv")
+    st.success("✅ Done! Choose a granularity, upload CSV, and label. Advanced settings are optional.")
 except Exception:
     st.error("Error while preparing the CSV export.")
     st.code(traceback.format_exc())
