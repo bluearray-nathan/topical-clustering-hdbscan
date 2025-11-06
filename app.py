@@ -1,4 +1,4 @@
-# app.py — Fast Hierarchical Topic Clustering (Parent & Child, Adaptive Children)
+# app.py — Fast Hierarchical Topic Clustering (Adaptive) + Scalable, Facet-Aware Labelling
 # ----------------------------------------------------------------------------
 # Input CSV columns (required):
 #   - cluster (main page-level cluster keyword)
@@ -11,6 +11,8 @@
 # 3) HDBSCAN pass A → Parent clusters (coarse)
 # 4) HDBSCAN pass B → Child clusters within each parent (fine, adaptive per-parent params)
 # 5) GPT topic labels (parents then children) with concurrency + progress
+#    • Scalable labelling: diversified examples + facet summary + guardrails
+#    • Configurable max words per label (default 8)
 # 6) Visualisation (PCA scatter)
 # 7) Summaries (parents, then children)
 # 8) Export: Parent Topic, Child Topic, Cluster (descriptive name), cluster, keyword, search volume
@@ -29,16 +31,22 @@ import openai
 import hdbscan
 import concurrent.futures as cf
 import traceback
+import random
+import re
 from collections import deque
 
 from sklearn.preprocessing import normalize
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_distances
+from sklearn.cluster import KMeans
+from sklearn.feature_extraction.text import CountVectorizer
 import plotly.express as px
+
+random.seed(42)
 
 st.set_page_config(page_title="Topical Clustering (Fast • Hierarchical • Adaptive)", layout="wide")
 st.title("🧩 Topical Clustering (Fast • Hierarchical • Adaptive)")
-st.caption("Embeds the page-level cluster keyword • UMAP presets • HDBSCAN Parents→Children • Adaptive child params • GPT labels with progress")
+st.caption("Embeds the page-level cluster keyword • UMAP presets • HDBSCAN Parents→Children • Adaptive child params • Scalable GPT labels")
 
 # ----------------------------- API key -----------------------------
 try:
@@ -110,7 +118,7 @@ with st.sidebar:
     epsilon_parent          = st.slider("Parent ε (EoM gap-bridge)", 0.00, 0.20, 0.07, 0.01)
 
     st.subheader("Children (adaptive baseline)")
-    # Baseline values only used if adaptive derivation falls back; otherwise auto-scaled per parent
+    # Baseline values used if adaptive derivation falls back; otherwise auto-scaled per parent
     min_cluster_size_child_base = st.slider("Child base min size (floor/backup)", 2, 100, 8)
     min_samples_child_base      = st.slider("Child base min samples (floor/backup)", 1, 10, 2)
     epsilon_child_base          = st.slider("Child base ε (floor/backup)", 0.00, 0.20, 0.04, 0.01)
@@ -122,6 +130,8 @@ with st.sidebar:
     eps_high_bound= st.slider("ε upper bound", 0.00, 0.20, 0.08, 0.01)
 
     st.header("Labelling")
+    # Configurable max words per label
+    max_label_words = st.slider("Max words per label", 3, 12, 8)
     auto_label_topics = st.checkbox("Auto-label parents & children with GPT", value=True)
     relabel_now = st.button("🔁 Re-label now")
     label_model = "gpt-4o-mini-2024-07-18"
@@ -407,14 +417,105 @@ except Exception:
     st.code(traceback.format_exc())
     st.stop()
 
-# ----------------------------- Topic labelling (parents then children) -----------------------------
-def label_topic_short(titles, model_name, temp):
-    joined = ", ".join(titles[:40])
+# ----------------------------- Scalable facet-aware labelling helpers -----------------------------
+def top_facets(texts, top_k=10, ngram_range=(1,2), min_df=1, token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z\-]+\b"):
+    """
+    Returns a list of (phrase, count) for salient unigrams/bigrams in `texts`.
+    Language-agnostic-ish; tune token_pattern/stop_words for your locale.
+    """
+    if not texts:
+        return []
+    cv = CountVectorizer(stop_words="english", ngram_range=ngram_range, min_df=min_df, token_pattern=token_pattern)
+    try:
+        X = cv.fit_transform(texts)
+    except ValueError:
+        return []
+    counts = np.asarray(X.sum(axis=0)).ravel()
+    vocab = np.array(cv.get_feature_names_out())
+    order = counts.argsort()[::-1]
+    pairs = [(vocab[i], int(counts[i])) for i in order[:top_k] if counts[i] > 0]
+    return pairs
+
+def facets_block(facets, max_lines=8):
+    if not facets:
+        return "Facet distribution: (no salient facets detected)"
+    total = sum(c for _, c in facets) or 1
+    lines = []
+    for phrase, cnt in facets[:max_lines]:
+        pct = 100.0 * cnt / total
+        lines.append(f"- {phrase}: {cnt} ({pct:.1f}%)")
+    return "Facet distribution:\n" + "\n".join(lines)
+
+def diversified_examples(indices, titles_all, embeddings, total_max=40):
+    """
+    Select representative examples covering sub-modes:
+    1) If small cluster, return all.
+    2) Else cluster the vectors (k ~ sqrt(n) bounded) and take medoid-ish exemplars per centroid.
+    3) If still room, top-up with random unseen items.
+    """
+    n = len(indices)
+    if n <= total_max:
+        return [titles_all[i] for i in indices]
+
+    # k ~ sqrt(n), bounded between 5 and total_max (cap at 20 to avoid tiny clusters exploding)
+    k = int(np.clip(int(np.sqrt(n)), 5, min(20, total_max)))
+    vecs = embeddings[indices]
+    km = KMeans(n_clusters=k, n_init="auto", random_state=42)
+    labels = km.fit_predict(vecs)
+    centers = km.cluster_centers_
+
+    picked = []
+    used = set()
+    for c in range(k):
+        idx_c = np.where(labels == c)[0]
+        if idx_c.size == 0:
+            continue
+        sub = vecs[idx_c]
+        d = ((sub - centers[c])**2).sum(axis=1)
+        best_local = indices[idx_c[d.argmin()]]
+        if best_local not in used:
+            picked.append(titles_all[best_local])
+            used.add(best_local)
+
+    # top up to total_max with random remaining examples
+    remaining = [i for i in indices if i not in used]
+    if remaining:
+        need = max(0, total_max - len(picked))
+        picked.extend([titles_all[i] for i in random.sample(remaining, min(need, len(remaining)))])
+    return picked[:total_max]
+
+def label_topic_short(titles_all, indices, embeddings, model_name, temp, max_words,
+                      total_max_examples=40, facets_top_k=10):
+    """
+    titles_all: list[str] for the whole dataset (indexable by absolute row index)
+    indices: np.array/list of absolute row indices belonging to the cluster to label
+    embeddings: np.ndarray of all row embeddings (already normalized)
+    """
+    # 1) Build a diverse sample from within this cluster
+    sample = diversified_examples(indices, titles_all, embeddings, total_max=total_max_examples)
+
+    # 2) Compute facet distribution (unigram/bigram counts) for this cluster
+    cluster_texts = [titles_all[i] for i in indices]
+    facets = top_facets(cluster_texts, top_k=facets_top_k)
+    facts = facets_block(facets)
+
+    # 3) Guardrails to avoid over-specific labels unless a facet truly dominates
+    dominance_rule = (
+        "Name the topic to reflect the overall cluster. "
+        "If multiple distinct facets (e.g., locations, formats, levels, audiences, industries) are present, "
+        "avoid naming a single facet unless it clearly dominates the cluster. "
+        "Prefer inclusive or general phrasing in those cases."
+    )
+
+    joined = ", ".join(sample)
     prompt = (
+        f"{facts}\n\n"
         "These page titles are about a similar topic:\n"
         f"{joined}\n\n"
-        "Return ONLY a concise topic name (2–4 words, noun phrase, no punctuation)."
+        f"{dominance_rule}\n"
+        f"Return a concise but descriptive topic name (up to {max_words} words, noun phrase, minimal punctuation)."
     )
+
     resp = openai.chat.completions.create(
         model=model_name,
         messages=[
@@ -423,9 +524,16 @@ def label_topic_short(titles, model_name, temp):
         ],
         temperature=temp,
     )
-    return resp.choices[0].message.content.strip()
+    text = resp.choices[0].message.content.strip()
 
-def label_groups(df_in, id_col, label_col_name, label_model, label_temp):
+    # enforce word cap (light post-process)
+    words = text.split()
+    if len(words) > max_words:
+        text = " ".join(words[:max_words])
+    return text
+
+def label_groups(df_in, id_col, label_col_name, label_model, label_temp, max_words,
+                 embeddings, titles_all, total_max_examples=40, facets_top_k=10):
     unique_ids = [i for i in sorted(df_in[id_col].unique()) if i != -1]
     labels_map = {-1: "Noise / Misc"}
     MAX_WORKERS = min(12, max(1, len(unique_ids)))
@@ -433,14 +541,19 @@ def label_groups(df_in, id_col, label_col_name, label_model, label_temp):
     status = st.empty()
     done, total = 0, len(unique_ids)
 
+    timings = deque(maxlen=20)
+
     def one(gid):
-        titles = df_in.loc[df_in[id_col] == gid, "descriptive_name"].head(40).tolist()
+        idx = np.where(df_in[id_col].values == gid)[0]  # absolute row indices
         start = time.time()
-        name = label_topic_short(titles, label_model, label_temp)
+        name = label_topic_short(
+            titles_all, idx, embeddings,
+            model_name=label_model, temp=label_temp, max_words=max_words,
+            total_max_examples=total_max_examples, facets_top_k=facets_top_k
+        )
         dur = time.time() - start
         return gid, name, dur
 
-    timings = deque(maxlen=20)
     with cf.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = [ex.submit(one, gid) for gid in unique_ids]
         for f in cf.as_completed(futures):
@@ -456,6 +569,7 @@ def label_groups(df_in, id_col, label_col_name, label_model, label_temp):
     df_in[label_col_name] = df_in[id_col].map(labels_map).astype(str)
     return labels_map
 
+# ----------------------------- Topic labelling (parents then children) -----------------------------
 try:
     # Hashes for cache invalidation
     parent_hash = hashlib.md5(np.array(df["parent_id"], dtype=np.int64).tobytes()).hexdigest()
@@ -464,11 +578,14 @@ try:
     should_label_parents = auto_label_topics and (st.session_state.last_parent_hash != parent_hash or relabel_now)
     should_label_children = auto_label_topics and (st.session_state.last_child_hash != child_hash or relabel_now)
 
+    titles_all = df["descriptive_name"].tolist()
+
     if auto_label_topics:
         if should_label_parents:
             st.subheader("6️⃣ Labelling parents")
             st.session_state.parent_labels_map = label_groups(
-                df, "parent_id", "parent_label", label_model, label_temp
+                df, "parent_id", "parent_label", label_model, label_temp, max_label_words,
+                embeddings=embeddings, titles_all=titles_all, total_max_examples=40, facets_top_k=10
             )
             st.session_state.last_parent_hash = parent_hash
         else:
@@ -478,7 +595,8 @@ try:
         if should_label_children:
             st.subheader("7️⃣ Labelling children")
             st.session_state.child_labels_map = label_groups(
-                df, "child_id", "child_label", label_model, label_temp
+                df, "child_id", "child_label", label_model, label_temp, max_label_words,
+                embeddings=embeddings, titles_all=titles_all, total_max_examples=40, facets_top_k=10
             )
             st.session_state.last_child_hash = child_hash
         else:
@@ -564,11 +682,12 @@ try:
 
     csv = export_df.to_csv(index=False).encode("utf-8")
     st.download_button("📥 Download Hierarchical Topics CSV", csv, "hierarchical_topics_adaptive.csv", "text/csv")
-    st.success("✅ Done! Adaptive children scale to each parent’s size & density. Adjust k_divisor/α/ε-bounds if you see over/under-splitting.")
+    st.success("✅ Done! Adaptive children scale to each parent’s size & density. Labelling now uses diversified examples + facet summaries to avoid over-specific names.")
 except Exception:
     st.error("Error while preparing the CSV export.")
     st.code(traceback.format_exc())
     st.stop()
+
 
 
 
