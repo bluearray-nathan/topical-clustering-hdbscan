@@ -1,23 +1,24 @@
-# app.py — Topic Clustering with "keep original name unless needed" + progress labelling
-# --------------------------------------------------------------------------------------
+# app.py — Fast Topic Clustering (embed from `cluster`, no upfront LLM naming)
+# ----------------------------------------------------------------------------
 # Input CSV columns (required):
 #   - cluster (main page-level cluster keyword)
 #   - keyword (all keywords within that page-level cluster, e.g., comma-separated)
 #   - search volume (total search volume of the page-level cluster)
 #
 # Flow:
-# 1) LLM generates 'descriptive_name' per row using rules that KEEP the original cluster name unless it's inadequate.
-# 2) Embeds ONLY 'descriptive_name' (OpenAI text-embedding-3-large, fixed)
-# 3) Optional UMAP smoothing via presets (Off/Broad/Balanced/Detailed) — presets also auto-set HDBSCAN defaults
-# 4) HDBSCAN (EoM) with easy epsilon slider
-# 5) GPT topic labels with concurrency + progress bar + rolling ETA, plus "Re-label topics now" button in the sidebar
-# 6) Visualisation + Topics table (table is shown BELOW the viz)
-# 7) Export: Topic, Cluster (descriptive name), cluster, keyword, search volume
+# 1) Embeds ONLY the `cluster` text (OpenAI text-embedding-3-large, fixed)
+# 2) Optional UMAP smoothing via presets (Off/Broad/Balanced/Detailed)
+#    → presets also auto-set HDBSCAN defaults (min_cluster_size, min_samples, ε)
+# 3) HDBSCAN (EoM) with easy epsilon slider
+# 4) GPT topic labels with concurrency + progress bar + rolling ETA
+# 5) Visualisation (scatter) → Topics table
+# 6) Export: Topic, Cluster (descriptive name), cluster, keyword, search volume
+#    (Cluster (descriptive name) mirrors `cluster` since upfront LLM naming is removed.)
 
 import time
+import math
 import re
 import json
-import math
 import hashlib
 import numpy as np
 import pandas as pd
@@ -26,15 +27,15 @@ import openai
 import hdbscan
 import concurrent.futures as cf
 from collections import deque
+
 from sklearn.preprocessing import normalize
 from sklearn.decomposition import PCA
 from sklearn.metrics.pairwise import cosine_distances
-from sklearn.metrics.pairwise import cosine_similarity  # (not used, but handy if you want centroid QA)
 import plotly.express as px
 
-st.set_page_config(page_title="Topical Clustering", layout="wide")
-st.title("🧩 Topical Clustering")
-st.caption("Upfront LLM naming (keeps original unless needed) • Name-only embeddings • UMAP presets • HDBSCAN (EoM) • GPT labels with progress")
+st.set_page_config(page_title="Topical Clustering (Fast)", layout="wide")
+st.title("🧩 Topical Clustering (Fast)")
+st.caption("Embeds the page-level cluster keyword • UMAP presets • HDBSCAN (EoM) • GPT labels with progress")
 
 # ----------------------------- API key -----------------------------
 try:
@@ -96,7 +97,7 @@ with st.sidebar:
         st.session_state.cluster_selection_epsilon = d["epsilon"]
         st.session_state.last_preset_applied = umap_preset
 
-    # Sliders (values are controlled by preset, but can be tweaked after)
+    # Sliders (values controlled by preset, but tweakable)
     min_cluster_size = st.slider(
         "Minimum topic size",
         min_value=2, max_value=60, value=st.session_state.min_cluster_size, key="min_cluster_size",
@@ -129,7 +130,7 @@ with st.sidebar:
 
     st.header("Labelling")
     auto_label_topics = st.checkbox("Auto-label topics with GPT", value=True)
-    relabel_now = st.button("🔁 Re-label topics now")  # in sidebar as requested
+    relabel_now = st.button("🔁 Re-label topics now")  # in sidebar
     label_model = "gpt-4o-mini-2024-07-18"
     label_temp = st.slider("Labelling creativity", 0.0, 1.0, 0.2, 0.05)
 
@@ -157,64 +158,11 @@ if not required_cols.issubset(df_raw.columns):
 
 st.success(f"✅ Loaded {len(df_raw)} page-level clusters.")
 
-# ----------------------------- Step 2: LLM descriptive name (keep original unless needed) -----------------------------
-st.subheader("2️⃣ Generate a descriptive name per page-level cluster")
+# No LLM naming — descriptive_name == cluster (kept for downstream consistency/export)
+df_raw["descriptive_name"] = df_raw["cluster"].astype(str)
 
-SYSTEM_NAMER = (
-    "You are an SEO analyst. Decide whether the given cluster name already represents ALL the keywords in that cluster.\n"
-    "Rules:\n"
-    "- If the cluster name already describes the overall set of keywords (including their main modifiers/intents), KEEP IT EXACTLY as the descriptive name.\n"
-    "- Only create a NEW descriptive name if the cluster name is too narrow, misleading, or misses obvious common modifiers across the keywords.\n"
-    "- The descriptive name must be a short noun phrase in Title Case (2–6 words), no punctuation. Avoid adjectives that add no meaning.\n"
-    "- Prefer specificity only when needed to cover the whole cluster; otherwise keep it concise.\n"
-    "Return JSON with fields: \"descriptive_name\" (string), \"used_original\" (true|false), \"reason\" (short string)."
-)
-
-@st.cache_data(show_spinner=False)
-def name_clusters_with_llm(rows: pd.DataFrame) -> pd.DataFrame:
-    out_rows = []
-    for _, r in rows.iterrows():
-        head = str(r.get("cluster", "")).strip()
-        kws = str(r.get("keyword", "")).strip()
-        user_prompt = (
-            f"Main cluster name: {head}\n"
-            f"Keywords in this cluster: {kws}\n\n"
-            "Decide: does the main cluster name already describe all keywords?\n"
-            "If yes, RETURN the cluster name unchanged as \"descriptive_name\".\n"
-            "If not, RETURN a better descriptive name that covers the full set.\n\n"
-            "Return ONLY valid JSON with keys descriptive_name, used_original, reason."
-        )
-        resp = openai.chat.completions.create(
-            model="gpt-4o-mini-2024-07-18",
-            messages=[
-                {"role": "system", "content": SYSTEM_NAMER},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
-        )
-        text = resp.choices[0].message.content.strip()
-        try:
-            m = re.search(r"\{.*\}", text, flags=re.S)
-            data = json.loads(m.group(0) if m else text)
-        except Exception:
-            data = {"descriptive_name": head, "used_original": True, "reason": "Fallback to original (JSON parse failed)."}
-
-        out_rows.append({
-            "descriptive_name": str(data.get("descriptive_name", head)).strip(),
-            "used_original": bool(data.get("used_original", True)),
-            "naming_reason": str(data.get("reason", "")).strip()
-        })
-        time.sleep(0.02)
-    return pd.DataFrame(out_rows)
-
-named = name_clusters_with_llm(df_raw[["cluster", "keyword", "search volume"]])
-df_raw = pd.concat([df_raw.reset_index(drop=True), named.reset_index(drop=True)], axis=1)
-
-with st.expander("Preview first 10 (descriptive_name + reason)"):
-    st.dataframe(df_raw[["descriptive_name", "used_original", "naming_reason", "cluster", "keyword", "search volume"]].head(10), use_container_width=True)
-
-# ----------------------------- Step 3: Embeddings (name-only) -----------------------------
-st.subheader("3️⃣ Generate embeddings")
+# ----------------------------- Embeddings from `cluster` -----------------------------
+st.subheader("2️⃣ Generate embeddings (from `cluster`)")
 @st.cache_data(show_spinner=False)
 def embed_texts(texts):
     model = "text-embedding-3-large"  # locked
@@ -226,12 +174,12 @@ def embed_texts(texts):
         time.sleep(0.10)
     return np.array(vecs)
 
-embeddings = embed_texts(df_raw["descriptive_name"].fillna("").astype(str).tolist())
+embeddings = embed_texts(df_raw["cluster"].fillna("").astype(str).tolist())
 embeddings = normalize(embeddings)
 st.success(f"✅ Created {len(embeddings)} embeddings.")
 
-# ----------------------------- Step 4: UMAP (presets) -----------------------------
-st.subheader("4️⃣ Smoothing (optional)")
+# ----------------------------- UMAP (presets) -----------------------------
+st.subheader("3️⃣ Smoothing (optional)")
 use_umap = (st.session_state.umap_preset != "Off")
 if use_umap:
     from umap import UMAP
@@ -251,8 +199,8 @@ else:
     X_for_cluster = None
     st.info("UMAP Off — using cosine distances directly.")
 
-# ----------------------------- Step 5: HDBSCAN (EoM) -----------------------------
-st.subheader("5️⃣ HDBSCAN clustering")
+# ----------------------------- HDBSCAN (EoM) -----------------------------
+st.subheader("4️⃣ HDBSCAN clustering")
 hdb_params = dict(
     min_cluster_size=st.session_state.min_cluster_size,
     min_samples=st.session_state.min_samples,
@@ -276,7 +224,7 @@ n_topics = len(set(labels)) - (1 if -1 in labels else 0)
 noise_pct = (labels == -1).mean() * 100 if len(labels) else 0.0
 st.success(f"✅ Topics found: {n_topics} • Noise: {noise_pct:.1f}%")
 
-# ----------------------------- Step 6: Labelling (with concurrency + progress) -----------------------------
+# ----------------------------- Topic labelling (concurrent + progress) -----------------------------
 def label_topic_short(titles, model_name, temp):
     joined = ", ".join(titles[:20])
     prompt = (
@@ -294,7 +242,6 @@ def label_topic_short(titles, model_name, temp):
     )
     return resp.choices[0].message.content.strip()
 
-# Build hash of current assignments
 topic_hash = hashlib.md5(np.array(labels, dtype=np.int64).tobytes()).hexdigest()
 
 should_label = False
@@ -303,12 +250,12 @@ if auto_label_topics:
         should_label = True
 
 if should_label:
-    st.subheader("6️⃣ Topic labels (running)")
+    st.subheader("5️⃣ Topic labels (running)")
     unique_topic_ids = sorted(set(df["topic_id"]))
     if -1 in unique_topic_ids:
         unique_topic_ids.remove(-1)
 
-    MAX_WORKERS = 12  # tune as needed
+    MAX_WORKERS = 12  # tune for your rate limits
     ROLL_N = 20
     progress = st.progress(0)
     status = st.empty()
@@ -324,7 +271,6 @@ if should_label:
         dur = time.time() - start
         return tid, name, dur
 
-    start_all = time.time()
     with cf.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = [ex.submit(label_one_cluster, tid) for tid in unique_topic_ids]
         for fut in cf.as_completed(futures):
@@ -347,8 +293,8 @@ if st.session_state.topic_labels_map:
 else:
     df["topic_label"] = df["topic_id"].astype(str)
 
-# ----------------------------- Step 7: Visualisation -----------------------------
-st.subheader("7️⃣ Visualise topics (2D PCA)")
+# ----------------------------- Visualisation -----------------------------
+st.subheader("6️⃣ Visualise topics (2D PCA)")
 pca = PCA(n_components=2)
 coords = pca.fit_transform(embeddings)
 df["x"] = coords[:, 0]
@@ -364,7 +310,7 @@ fig = px.scatter(
 st.plotly_chart(fig, use_container_width=True)
 
 # ----------------------------- Topics table (below viz) -------------------
-st.subheader("8️⃣ Topics table")
+st.subheader("7️⃣ Topics table")
 def topics_summary_table(frame):
     rows = []
     for tid in sorted(frame["topic_id"].unique()):
@@ -384,8 +330,8 @@ summary_df = topics_summary_table(df)
 st.dataframe(summary_df, use_container_width=True, height=420)
 
 # ----------------------------- Export -----------------------------
-st.subheader("9️⃣ Export")
-# Output columns: Topic, Cluster (descriptive name), then the original 3 columns
+st.subheader("8️⃣ Export")
+# "Cluster (descriptive name)" mirrors `cluster` now (no LLM naming step)
 export_df = df.rename(columns={"descriptive_name": "Cluster (descriptive name)"})
 export_df = export_df[[
     "topic_label", "Cluster (descriptive name)", "cluster", "keyword", "search volume"
@@ -394,7 +340,8 @@ export_df = export_df[[
 csv = export_df.to_csv(index=False).encode("utf-8")
 st.download_button("📥 Download Topics CSV", csv, "clustered_topics_with_clusters.csv", "text/csv")
 
-st.success("✅ Done! Change the preset (auto-sets sensible defaults), tweak sliders if needed, and click “Re-label topics now” any time.")
+st.success("✅ Done! Embedding from `cluster` speeds up large datasets. Use a UMAP preset to set sensible defaults, tweak, and hit “Re-label topics now” anytime.")
+
 
 
 
