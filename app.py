@@ -71,6 +71,13 @@ if "last_parent_hash" not in st.session_state:
 if "last_child_hash" not in st.session_state:
     st.session_state.last_child_hash = None
 
+# ----------------------------- Defaults for labelling (sidebar section removed) -----------------------------
+MAX_LABEL_WORDS = 4
+AUTO_LABEL_TOPICS = True
+RELABEL_NOW = False
+LABEL_MODEL = "gpt-4o-mini-2024-07-18"
+LABEL_TEMP = 0.2
+
 # ----------------------------- Sidebar -----------------------------
 with st.sidebar:
     st.header("Setup")
@@ -93,18 +100,6 @@ with st.sidebar:
         help="Controls how aggressively we split each parent into child subtopics. All presets use EOM for consistency."
     )
 
-    st.header("Labelling")
-    # Fixed 1–4 word labels (no slider)
-    MAX_LABEL_WORDS = 4
-    st.caption("Labels use **1–4 words** automatically (1 word if sufficient).")
-
-    auto_label_topics = st.checkbox("Auto-label topics with GPT", value=True,
-                                    help="Automatically request GPT labels after clustering.")
-    relabel_now = st.button("🔁 Re-label now", help="Force relabelling even if clusters haven't changed.")
-    label_model = "gpt-4o-mini-2024-07-18"
-    label_temp = st.slider("Labelling creativity", 0.0, 1.0, 0.2, 0.05,
-                           help="Higher = more creative names; lower = more conservative names.")
-
     # ------------------------- Child & Parent presets (EOM-only; finer → more topics) -------------------------
     # Parent presets unchanged
     PARENT_PRESETS = {
@@ -122,7 +117,7 @@ with st.sidebar:
         },
     }
 
-    # CHILD_PRESETS are based on your original settings, but **EOM for all** and with
+    # CHILD_PRESETS are based on the original settings, but **EOM for all** and with
     # one targeted tweak to ensure "More, finer" reliably yields **more** subtopics:
     # - "More, finer": increase k_divisor → smaller min_cluster_size per parent (more splits).
     CHILD_PRESETS = {
@@ -185,8 +180,8 @@ if len(df_raw) == 0:
 st.success(f"✅ Loaded {len(df_raw)} page-level clusters.")
 df_raw["descriptive_name"] = df_raw["cluster"].astype(str)
 
-# ----------------------------- Embeddings from `cluster` -----------------------------
-st.subheader("2️⃣ Generate embeddings (from `cluster`)")
+# ----------------------------- Embeddings -----------------------------
+st.subheader("2️⃣ Generate embeddings")
 
 @st.cache_data(show_spinner=False)
 def embed_texts(texts):
@@ -220,8 +215,8 @@ except Exception:
 
 st.success(f"✅ Created {len(embeddings)} embeddings.")
 
-# ----------------------------- UMAP (always on; set by PARENT granularity) -----------------------------
-st.subheader("3️⃣ Smoothing (UMAP)")
+# ----------------------------- Smoothing -----------------------------
+st.subheader("3️⃣ Smoothing")
 try:
     from umap import UMAP
     n_samples = embeddings.shape[0]
@@ -238,12 +233,12 @@ try:
     X_for_cluster = umap.fit_transform(embeddings)
     st.success(f"✅ UMAP applied (neighbors={n_neighbors}, components={n_components}).")
 except Exception:
-    st.error("Error during UMAP smoothing.")
+    st.error("Error during smoothing.")
     st.code(traceback.format_exc())
     st.stop()
 
 # ----------------------------- HDBSCAN Pass A — Parents -----------------------------
-st.subheader("4️⃣ HDBSCAN (Parents — coarse)")
+st.subheader("4️⃣ HDBSCAN")
 hdb_parent = dict(
     min_cluster_size=int(min_cluster_size_parent),
     min_samples=int(min_samples_parent),
@@ -316,8 +311,8 @@ def derive_child_params_for_parent(parent_indices, *,
 
     return mcs, min_samples, epsilon, True
 
-# ----------------------------- HDBSCAN Pass B — Children per Parent (Adaptive) -----------------------------
-st.subheader("5️⃣ HDBSCAN (Children — adaptive per parent)")
+# ----------------------------- HDBSCAN Pass B — Children per Parent -----------------------------
+st.subheader("5️⃣ HDBSCAN (Children)")
 child_ids = np.full(len(df), -1, dtype=int)
 
 try:
@@ -376,9 +371,9 @@ try:
     df["child_id"] = child_ids
     n_children = len(set(child_ids)) - (1 if -1 in child_ids else 0)
     noise_child_pct = (child_ids == -1).mean() * 100 if len(child_ids) else 0.0
-    st.success(f"✅ Child clusters: {n_children} • Child noise: {noise_child_pct:.1f}% (adaptive, EOM mode)")
+    st.success(f"✅ Child clusters: {n_children} • Child noise: {noise_child_pct:.1f}%")
 except Exception:
-    st.error("Error during HDBSCAN (children, adaptive).")
+    st.error("Error during HDBSCAN (children).")
     st.code(traceback.format_exc())
     st.stop()
 
@@ -537,16 +532,16 @@ try:
     parent_hash = hashlib.md5(np.array(df["parent_id"], dtype=np.int64).tobytes()).hexdigest()
     child_hash  = hashlib.md5(np.array(df[["parent_id","child_id"]], dtype=np.int64).tobytes()).hexdigest()
 
-    should_label_parents = auto_label_topics and (st.session_state.last_parent_hash != parent_hash or relabel_now)
-    should_label_children = auto_label_topics and (st.session_state.last_child_hash != child_hash or relabel_now)
+    should_label_parents = AUTO_LABEL_TOPICS and (st.session_state.last_parent_hash != parent_hash or RELABEL_NOW)
+    should_label_children = AUTO_LABEL_TOPICS and (st.session_state.last_child_hash != child_hash or RELABEL_NOW)
 
     titles_all = df["descriptive_name"].tolist()
 
-    if auto_label_topics:
+    if AUTO_LABEL_TOPICS:
         if should_label_parents:
             st.subheader("6️⃣ Labelling parents")
             st.session_state.parent_labels_map = label_groups(
-                df, "parent_id", "parent_label", label_model, label_temp, MAX_LABEL_WORDS,
+                df, "parent_id", "parent_label", LABEL_MODEL, LABEL_TEMP, MAX_LABEL_WORDS,
                 embeddings=embeddings, titles_all=titles_all, total_max_examples=40, facets_top_k=10
             )
             st.session_state.last_parent_hash = parent_hash
@@ -557,7 +552,7 @@ try:
         if should_label_children:
             st.subheader("7️⃣ Labelling children")
             st.session_state.child_labels_map = label_groups(
-                df, "child_id", "child_label", label_model, label_temp, MAX_LABEL_WORDS,
+                df, "child_id", "child_label", LABEL_MODEL, LABEL_TEMP, MAX_LABEL_WORDS,
                 embeddings=embeddings, titles_all=titles_all, total_max_examples=40, facets_top_k=10
             )
             st.session_state.last_child_hash = child_hash
@@ -606,7 +601,7 @@ st.subheader("9️⃣ Parent summary")
 try:
     parent_summary = (
         df[df["parent_id"] != -1]
-        .groupby(["parent_id", "parent_label"])
+        .groupby(["parent_label"])
         .agg(size=("descriptive_name", "size"))
         .reset_index()
         .sort_values("size", ascending=False)
@@ -620,10 +615,10 @@ st.subheader("🔟 Child summary (per parent)")
 try:
     child_summary = (
         df[df["child_id"] != -1]
-        .groupby(["parent_id", "parent_label", "child_id", "child_label"])
+        .groupby(["parent_label", "child_id", "child_label"])
         .agg(size=("descriptive_name", "size"))
         .reset_index()
-        .sort_values(["parent_id", "size"], ascending=[True, False])
+        .sort_values(["parent_label", "size"], ascending=[True, False])
     )
     st.dataframe(child_summary, use_container_width=True, height=420)
 except Exception:
