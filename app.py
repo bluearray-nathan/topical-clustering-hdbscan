@@ -48,11 +48,11 @@ It groups similar clusters into **Parent Topics** and **Child Subtopics**, helpi
 
 ---
 
-### Limitations (set expectations)
-- **Not perfect:** Clustering groups by textual similarity, not intent — manual review still helps.  
-- **Labels are suggestions:** GPT may simplify or generalise; rename as needed.  
-- **Input quality matters:** Ambiguous or repetitive names reduce accuracy.  
-- **Granularity trade-off:** Broader = cleaner but fewer topics; Finer = more detail but more noise.
+### HDBSCAN selection methods (plain-English)
+- **EOM (Excess of Mass)** → *Fewer, bigger subtopics.* Think: "**merge similar things together**" to keep groups stable.
+- **Leaf** → *More, finer subtopics.* Think: "**split to the smallest stable pieces**" for extra detail.
+
+You don't need to know the maths—just choose whether you want **broader** or **more granular** subtopics.
 """)
 
 # ----------------------------- API key -----------------------------
@@ -93,6 +93,7 @@ with st.sidebar:
         index=1,
         help="Controls how aggressively we split each parent into child subtopics."
     )
+    st.caption("**EOM** = fewer, bigger subtopics • **Leaf** = more, finer subtopics")
 
     st.header("Labelling")
     # Fixed 1–4 word labels (no slider)
@@ -106,7 +107,7 @@ with st.sidebar:
     label_temp = st.slider("Labelling creativity", 0.0, 1.0, 0.2, 0.05,
                            help="Higher = more creative names; lower = more conservative names.")
 
-    # Preset configurations
+    # ------------------------- CHANGE 1: Stronger child presets + selection method -------------------------
     PARENT_PRESETS = {
         "Fewer, broader topics": {
             "umap": {"neighbors": 60, "components": 8},
@@ -123,17 +124,32 @@ with st.sidebar:
     }
 
     CHILD_PRESETS = {
+        # Fewer, broader → bigger clusters, more merging; keep EOM
         "Fewer, broader subtopics": {
-            "child_base": {"mcs": 10, "ms": 2, "eps": 0.05},
-            "adaptive": {"k_divisor": 8, "alpha_eps": 0.90, "eps_low": 0.02, "eps_high": 0.10},
+            "child_base": {"mcs": 20, "ms": 5, "eps": 0.08},
+            "adaptive": {
+                "k_divisor": 28, "alpha_eps": 1.10,
+                "eps_low": 0.03, "eps_high": 0.12
+            },
+            "method": "eom"
         },
+        # Balanced → similar to original
         "Balanced (recommended)": {
             "child_base": {"mcs": 8, "ms": 2, "eps": 0.04},
-            "adaptive": {"k_divisor": 12, "alpha_eps": 0.90, "eps_low": 0.01, "eps_high": 0.08},
+            "adaptive": {
+                "k_divisor": 12, "alpha_eps": 0.90,
+                "eps_low": 0.01, "eps_high": 0.08
+            },
+            "method": "eom"
         },
+        # More, finer → smaller clusters, tighter eps, Leaf mode for finer splits
         "More, finer subtopics": {
-            "child_base": {"mcs": 6, "ms": 2, "eps": 0.03},
-            "adaptive": {"k_divisor": 16, "alpha_eps": 0.85, "eps_low": 0.01, "eps_high": 0.06},
+            "child_base": {"mcs": 3, "ms": 1, "eps": 0.02},
+            "adaptive": {
+                "k_divisor": 8, "alpha_eps": 0.75,
+                "eps_low": 0.005, "eps_high": 0.05
+            },
+            "method": "leaf"
         },
     }
 
@@ -153,6 +169,7 @@ with st.sidebar:
     alpha_eps = p_child["adaptive"]["alpha_eps"]
     eps_low_bound = p_child["adaptive"]["eps_low"]
     eps_high_bound = p_child["adaptive"]["eps_high"]
+    child_selection_method = p_child.get("method", "eom")  # "eom" or "leaf"
 
 # ----------------------------- Upload data -----------------------------
 st.subheader("1️⃣ Upload your CSV")
@@ -352,10 +369,11 @@ try:
             next_child_base += 1
             continue
 
+        # ------------------------- CHANGE 2: Use preset-provided selection method -------------------------
         child_params_local = dict(
             min_cluster_size=int(mcs_i),
             min_samples=int(ms_i),
-            cluster_selection_method="eom",
+            cluster_selection_method=child_selection_method,  # "eom" (fewer, bigger) or "leaf" (more, finer)
             cluster_selection_epsilon=float(eps_i),
             metric="euclidean"
         )
@@ -371,7 +389,7 @@ try:
     df["child_id"] = child_ids
     n_children = len(set(child_ids)) - (1 if -1 in child_ids else 0)
     noise_child_pct = (child_ids == -1).mean() * 100 if len(child_ids) else 0.0
-    st.success(f"✅ Child clusters: {n_children} • Child noise: {noise_child_pct:.1f}% (adaptive)")
+    st.success(f"✅ Child clusters: {n_children} • Child noise: {noise_child_pct:.1f}% (adaptive, {child_selection_method.upper()} mode)")
 except Exception:
     st.error("Error during HDBSCAN (children, adaptive).")
     st.code(traceback.format_exc())
@@ -587,7 +605,7 @@ try:
         df, x="x", y="y",
         color="parent_label",
         hover_data=["parent_label", "descriptive_name", "cluster", "keyword", "search volume"],
-        title="Parent Topical Clusters (HDBSCAN EoM)",
+        title="Parent Topical Clusters (HDBSCAN selection: EOM)",
         width=1100, height=720
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -643,6 +661,7 @@ except Exception:
     st.error("Error while preparing the CSV export.")
     st.code(traceback.format_exc())
     st.stop()
+
 
 
 
