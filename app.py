@@ -95,8 +95,10 @@ with st.sidebar:
     )
 
     st.header("Labelling")
-    max_label_words = st.slider("Max words per label", 3, 20, 8,
-                                help="Upper bound for words in each GPT-generated topic name.")
+    # Fixed 1–4 word labels (no slider)
+    MAX_LABEL_WORDS = 4
+    st.caption("Labels use **1–4 words** automatically (1 word if sufficient).")
+
     auto_label_topics = st.checkbox("Auto-label topics with GPT", value=True,
                                     help="Automatically request GPT labels after clustering.")
     relabel_now = st.button("🔁 Re-label now", help="Force relabelling even if clusters haven't changed.")
@@ -467,7 +469,8 @@ def label_topic_short(titles_all, indices, embeddings, model_name, temp, max_wor
         "These page titles are about a similar topic:\n"
         f"{joined}\n\n"
         f"{dominance_rule}\n"
-        f"Return a concise but descriptive topic name (up to {max_words} words, noun phrase, minimal punctuation)."
+        "Return a concise, human-friendly topic name in 1–4 words (noun phrase; minimal punctuation). "
+        "Use 1 word if it fully captures the theme; otherwise 2–4 words for clarity."
     )
 
     resp = openai.chat.completions.create(
@@ -480,7 +483,7 @@ def label_topic_short(titles_all, indices, embeddings, model_name, temp, max_wor
     )
     text = resp.choices[0].message.content.strip()
 
-    # enforce word cap
+    # enforce word cap (hard backstop)
     words = text.split()
     if len(words) > max_words:
         text = " ".join(words[:max_words])
@@ -538,7 +541,7 @@ try:
         if should_label_parents:
             st.subheader("6️⃣ Labelling parents")
             st.session_state.parent_labels_map = label_groups(
-                df, "parent_id", "parent_label", label_model, label_temp, max_label_words,
+                df, "parent_id", "parent_label", label_model, label_temp, MAX_LABEL_WORDS,
                 embeddings=embeddings, titles_all=titles_all, total_max_examples=40, facets_top_k=10
             )
             st.session_state.last_parent_hash = parent_hash
@@ -549,7 +552,7 @@ try:
         if should_label_children:
             st.subheader("7️⃣ Labelling children")
             st.session_state.child_labels_map = label_groups(
-                df, "child_id", "child_label", label_model, label_temp, max_label_words,
+                df, "child_id", "child_label", label_model, label_temp, MAX_LABEL_WORDS,
                 embeddings=embeddings, titles_all=titles_all, total_max_examples=40, facets_top_k=10
             )
             st.session_state.last_child_hash = child_hash
@@ -640,6 +643,7 @@ except Exception:
     st.error("Error while preparing the CSV export.")
     st.code(traceback.format_exc())
     st.stop()
+
 
 
 
