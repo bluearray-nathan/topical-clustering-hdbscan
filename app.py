@@ -48,10 +48,11 @@ It groups similar clusters into **Parent Topics** and **Child Subtopics**, helpi
 
 ---
 
-### HDBSCAN selection method used
-We use **EOM (Excess of Mass)** everywhere for consistency.
-- In plain English: **EOM tends to merge similar items**, giving you **fewer, bigger, more stable** subtopics.
-- We vary *how many* subtopics you get via the **preset knobs** (see sidebar), not by switching algorithms.
+### Limitations (set expectations)
+- **Not perfect:** Clustering groups by textual similarity, not intent — manual review still helps.  
+- **Labels are suggestions:** GPT may simplify or generalise; rename as needed.  
+- **Input quality matters:** Ambiguous or repetitive names reduce accuracy.  
+- **Granularity trade-off:** Broader = cleaner but fewer topics; Finer = more detail but more noise.
 """)
 
 # ----------------------------- API key -----------------------------
@@ -101,7 +102,6 @@ with st.sidebar:
     )
 
     # ------------------------- Child & Parent presets (EOM-only; finer → more topics) -------------------------
-    # Parent presets unchanged
     PARENT_PRESETS = {
         "Fewer, broader topics": {
             "umap": {"neighbors": 60, "components": 8},
@@ -117,9 +117,8 @@ with st.sidebar:
         },
     }
 
-    # CHILD_PRESETS are based on the original settings, but **EOM for all** and with
-    # one targeted tweak to ensure "More, finer" reliably yields **more** subtopics:
-    # - "More, finer": increase k_divisor → smaller min_cluster_size per parent (more splits).
+    # CHILD_PRESETS mirror original behaviour; all use EOM.
+    # Ensure "More, finer" yields more splits by shrinking per-parent min_cluster_size via higher k_divisor.
     CHILD_PRESETS = {
         "Fewer, broader subtopics": {
             "child_base": {"mcs": 10, "ms": 2, "eps": 0.05},
@@ -131,7 +130,7 @@ with st.sidebar:
         },
         "More, finer subtopics": {
             "child_base": {"mcs": 6, "ms": 2, "eps": 0.03},
-            # ORIGINAL had k_divisor=16; we bump to 20 so min_cluster_size shrinks → more children
+            # ORIGINAL had k_divisor=16; set to 20 so min_cluster_size shrinks → more children
             "adaptive": {"k_divisor": 20, "alpha_eps": 0.85, "eps_low": 0.01, "eps_high": 0.06},
         },
     }
@@ -643,6 +642,7 @@ except Exception:
     st.error("Error while preparing the CSV export.")
     st.code(traceback.format_exc())
     st.stop()
+
 
 
 
