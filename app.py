@@ -9,6 +9,7 @@
 # which sits on top of this.
 
 import time
+import json
 import hashlib
 import threading
 import concurrent.futures as cf
@@ -22,18 +23,16 @@ from sklearn.cluster import AgglomerativeClustering
 from sklearn.decomposition import PCA
 import plotly.express as px
 
-st.set_page_config(page_title="Keyword Topic Clustering", layout="wide")
-st.title("Keyword Topic Clustering")
+st.set_page_config(page_title="Keyword Clustering and Page Mapping", layout="wide")
+st.title("Keyword Clustering and Page Mapping")
 
 with st.expander("What this does"):
     st.markdown("""
-Groups a keyword list into **topic clusters** by meaning. Every keyword gets a home; there is no
-"noise" bucket. Built on text-embedding-3-large with agglomerative clustering on cosine distance.
+Groups a keyword list into **topic clusters** by meaning, then splits each topic into **pages by
+intent**. Topic = pillar, page = topic plus intent. Every keyword gets a home; there is no "noise" bucket.
 
-It captures **topic, not intent**, so a topic like "comprehensive insurance" will contain both
-informational keywords ("what is comprehensive cover") and commercial ones ("cheapest comprehensive
-car insurance"). Splitting each topic into separate **pages by intent** is the next layer, coming on
-top of this.
+Clustering uses text-embedding-3-large with agglomerative clustering on cosine distance. Intent is
+currently read from the **keyword text**; SERP-grounded intent is the planned next upgrade.
 """)
 
 # ----------------------------- API key -----------------------------
@@ -181,38 +180,105 @@ with cf.ThreadPoolExecutor(max_workers=12) as ex:
 df["topic"] = df["topic_id"].map(labels_map)
 st.success("Topics labelled.")
 
-# ----------------------------- 5. Topics table -----------------------------
-st.subheader("5. Topics")
-rows = []
+# ----------------------------- 5. Intent + pages -----------------------------
+st.subheader("5. Split topics into pages by intent")
+
+INTENTS = ["Transactional", "Commercial", "Informational", "Navigational", "Local"]
+
+
+@st.cache_data(show_spinner=False)
+def classify_intents(keywords, model):
+    """Classify each keyword's intent from its text. Cached, so it runs once per keyword set."""
+    out = {}
+    batch_size = 40
+    sys_msg = ("You are an SEO search-intent classifier. For each keyword choose exactly one intent "
+               "from: " + ", ".join(INTENTS) + ". "
+               'Reply only as JSON: {"results":[{"keyword":"...","intent":"..."}]}.')
+    for i in range(0, len(keywords), batch_size):
+        batch = keywords[i:i + batch_size]
+        user_msg = "Classify these keywords:\n" + "\n".join(f"- {k}" for k in batch)
+        try:
+            resp = openai.chat.completions.create(
+                model=model, temperature=0,
+                response_format={"type": "json_object"},
+                messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}],
+            )
+            for r in json.loads(resp.choices[0].message.content).get("results", []):
+                intent = str(r.get("intent", "")).strip()
+                out[str(r.get("keyword", "")).strip()] = intent if intent in INTENTS else "Informational"
+        except Exception:
+            for k in batch:
+                out[k] = "Informational"
+    for k in keywords:                       # guarantee every keyword is covered
+        out.setdefault(k, "Informational")
+    return out
+
+
+with st.spinner("Classifying intent from keyword text..."):
+    intent_map = classify_intents(df["keyword"].tolist(), LABEL_MODEL)
+df["intent"] = df["keyword"].map(intent_map).fillna("Informational")
+df["page"] = df["topic"] + " (" + df["intent"] + ")"
+n_pages = df.groupby(["topic_id", "intent"]).ngroups
+dist = ", ".join(f"{k}: {v}" for k, v in df["intent"].value_counts().items())
+st.success(f"{n_pages} pages across {n_topics} topics. Intent read from text ({LABEL_MODEL}).")
+st.caption(f"Intent distribution: {dist}. SERP-grounded intent is the planned next upgrade.")
+
+# ----------------------------- 6. Topics and pages -----------------------------
+st.subheader("6. Topics and pages")
+
+topic_rows = []
 for tid in ids:
     sub = df[df["topic_id"] == tid].sort_values("volume", ascending=False, na_position="last")
     vol = sub["volume"].sum(min_count=1)
-    rows.append({
+    topic_rows.append({
         "Topic": labels_map[tid],
+        "Pages": int(sub["intent"].nunique()),
         "Keywords": len(sub),
         "Volume": (int(vol) if pd.notna(vol) else None),
         "Head term": sub["keyword"].iloc[0],
     })
-summary = pd.DataFrame(rows).sort_values("Volume", ascending=False, na_position="last")
-st.dataframe(summary, use_container_width=True, height=420)
+topics_tbl = pd.DataFrame(topic_rows).sort_values("Volume", ascending=False, na_position="last")
+st.markdown("**Topics (pillars)**")
+st.dataframe(topics_tbl, use_container_width=True, height=280)
 
-# 2D map (coloured by topic; legend hidden as there can be many)
+page_rows = []
+for (tid, intent), sub in df.groupby(["topic_id", "intent"]):
+    sub = sub.sort_values("volume", ascending=False, na_position="last")
+    vol = sub["volume"].sum(min_count=1)
+    page_rows.append({
+        "Page": f"{labels_map[tid]} ({intent})",
+        "Topic": labels_map[tid],
+        "Intent": intent,
+        "Keywords": len(sub),
+        "Volume": (int(vol) if pd.notna(vol) else None),
+        "Head term": sub["keyword"].iloc[0],
+    })
+pages_tbl = pd.DataFrame(page_rows).sort_values("Volume", ascending=False, na_position="last")
+st.markdown("**Pages (each topic split by intent)**")
+st.dataframe(pages_tbl, use_container_width=True, height=420)
+
+# 2D map, colour by topic or intent
 try:
     coords = PCA(n_components=2).fit_transform(X)
     df["x"], df["y"] = coords[:, 0], coords[:, 1]
-    fig = px.scatter(df, x="x", y="y", color="topic",
-                     hover_data=["keyword", "topic", "volume"], height=650,
-                     title="Keywords by topic")
-    fig.update_layout(showlegend=False)
+    colour_by = st.radio("Colour the map by", ["Topic", "Intent"], horizontal=True)
+    fig = px.scatter(df, x="x", y="y", color=colour_by.lower(),
+                     hover_data=["keyword", "topic", "intent", "volume"], height=650,
+                     title=f"Keywords by {colour_by.lower()}")
+    if colour_by == "Topic":
+        fig.update_layout(showlegend=False)
     st.plotly_chart(fig, use_container_width=True)
 except Exception:
     pass
 
-# ----------------------------- 6. Export -----------------------------
-st.subheader("6. Export")
-export = df[["keyword", "volume", "topic", "topic_id"]].rename(
-    columns={"keyword": "Keyword", "volume": "Volume", "topic": "Topic", "topic_id": "Topic ID"})
-st.download_button("Download topic clustering (CSV)",
-                   export.to_csv(index=False).encode("utf-8"),
-                   "topic_clustering.csv", "text/csv")
-st.caption("Next layer: split each topic into individual pages by intent.")
+# ----------------------------- 7. Export -----------------------------
+st.subheader("7. Export")
+kw_export = df[["keyword", "volume", "topic", "intent", "page"]].rename(
+    columns={"keyword": "Keyword", "volume": "Volume", "topic": "Topic", "intent": "Intent", "page": "Page"})
+st.download_button("Download keyword mapping (CSV)",
+                   kw_export.to_csv(index=False).encode("utf-8"),
+                   "keyword_page_mapping.csv", "text/csv")
+st.download_button("Download page summary (CSV)",
+                   pages_tbl.to_csv(index=False).encode("utf-8"),
+                   "page_summary.csv", "text/csv")
+st.caption("Topic = pillar. Page = topic split by intent. Intent is text-based for now.")
