@@ -83,41 +83,40 @@ def _intent_from_item_types(types):
 
 
 def dfs_live(keywords, location, auth, progress_cb=None):
-    """Live Advanced: instant but pricier per call. Returns (intent_map, info)."""
+    """Live Advanced. DataForSEO Live accepts only ONE task per request, so we send one keyword
+    per call and parallelise across a thread pool. Returns (intent_map, info)."""
     headers = {"Authorization": "Basic " + auth, "Content-Type": "application/json"}
     out, cost, failed, done = {}, 0.0, 0, 0
-    chunks = [keywords[i:i + 20] for i in range(0, len(keywords), 20)]
 
-    def fetch(chunk):
-        payload = [{"keyword": k, "location_name": location, "language_code": "en", "device": "desktop"}
-                   for k in chunk]
-        try:
-            r = requests.post(DFS_BASE + "/live/advanced", headers=headers, json=payload, timeout=180)
-            r.raise_for_status()
-            j = r.json()
-        except Exception:
-            return {k: None for k in chunk}, 0.0, len(chunk)
-        res, f = {}, 0
-        for k, task in zip(chunk, j.get("tasks") or []):
+    def fetch(kw):
+        payload = [{"keyword": kw, "location_name": location, "language_code": "en", "device": "desktop"}]
+        for _ in range(2):                       # one light retry on a transient error
+            try:
+                r = requests.post(DFS_BASE + "/live/advanced", headers=headers, json=payload, timeout=60)
+                r.raise_for_status()
+                j = r.json()
+            except Exception:
+                continue
+            task = (j.get("tasks") or [{}])[0]
             if (task.get("status_code") or 0) >= 40000:
-                f += 1
+                return kw, None, float(j.get("cost") or 0.0), 1
             types = []
             for rr in (task.get("result") or []):
                 types = rr.get("item_types") or []
                 break
-            res[k] = _intent_from_item_types(types)
-        return res, float(j.get("cost") or 0.0), f
+            return kw, _intent_from_item_types(types), float(j.get("cost") or 0.0), 0
+        return kw, None, 0.0, 1
 
-    with cf.ThreadPoolExecutor(max_workers=8) as ex:
-        futs = {ex.submit(fetch, ch): ch for ch in chunks}
+    with cf.ThreadPoolExecutor(max_workers=12) as ex:
+        futs = [ex.submit(fetch, kw) for kw in keywords]
         for fut in cf.as_completed(futs):
-            res, c, f = fut.result()
-            out.update(res)
+            kw, it, c, f = fut.result()
+            out[kw] = it
             cost += c
             failed += f
             done += 1
             if progress_cb:
-                progress_cb(done, len(chunks))
+                progress_cb(done, len(keywords))
     info = {"submitted": len(keywords), "resolved": sum(1 for v in out.values() if v),
             "failed": failed, "cost": cost}
     return out, info
