@@ -10,6 +10,7 @@
 
 import time
 import json
+import base64
 import hashlib
 import threading
 import concurrent.futures as cf
@@ -18,6 +19,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import openai
+import requests
 from sklearn.preprocessing import normalize
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.decomposition import PCA
@@ -48,6 +50,135 @@ LABEL_MODEL = "gpt-4o-mini-2024-07-18"
 if "label_cache" not in st.session_state:
     st.session_state.label_cache = {}
 
+# DataForSEO credentials (optional, Basic auth). Used for SERP-based intent.
+try:
+    _dfs = st.secrets["dataforseo"]
+    DFS_AUTH = base64.b64encode(f"{_dfs['login']}:{_dfs['password']}".encode()).decode()
+except Exception:
+    DFS_AUTH = None
+
+DFS_BASE = "https://api.dataforseo.com/v3/serp/google/organic"
+
+
+def _intent_from_item_types(types):
+    """Map a DataForSEO result's item_types to an intent, or None to keep the text label."""
+    t = {str(x).lower() for x in (types or [])}
+    if t & {"local_pack", "map", "local_services", "hotels_pack", "google_hotels"}:
+        return "Local"
+    if t & {"shopping", "popular_products", "google_flights"}:
+        return "Transactional"
+    info = bool(t & {"featured_snippet", "people_also_ask", "answer_box", "knowledge_graph",
+                     "questions_and_answers", "discussions_and_forums"})
+    ads = bool(t & {"paid", "commercial_units"})
+    if ads and not info:
+        return "Transactional"
+    if ads:
+        return "Commercial"
+    if info:
+        return "Informational"
+    return None
+
+
+def dfs_live(keywords, location, auth, progress_cb=None):
+    """Live Advanced: instant but pricier per call. Returns (intent_map, info)."""
+    headers = {"Authorization": "Basic " + auth, "Content-Type": "application/json"}
+    out, cost, failed, done = {}, 0.0, 0, 0
+    chunks = [keywords[i:i + 20] for i in range(0, len(keywords), 20)]
+
+    def fetch(chunk):
+        payload = [{"keyword": k, "location_name": location, "language_code": "en", "device": "desktop"}
+                   for k in chunk]
+        try:
+            r = requests.post(DFS_BASE + "/live/advanced", headers=headers, json=payload, timeout=180)
+            r.raise_for_status()
+            j = r.json()
+        except Exception:
+            return {k: None for k in chunk}, 0.0, len(chunk)
+        res, f = {}, 0
+        for k, task in zip(chunk, j.get("tasks") or []):
+            if (task.get("status_code") or 0) >= 40000:
+                f += 1
+            types = []
+            for rr in (task.get("result") or []):
+                types = rr.get("item_types") or []
+                break
+            res[k] = _intent_from_item_types(types)
+        return res, float(j.get("cost") or 0.0), f
+
+    with cf.ThreadPoolExecutor(max_workers=8) as ex:
+        futs = {ex.submit(fetch, ch): ch for ch in chunks}
+        for fut in cf.as_completed(futs):
+            res, c, f = fut.result()
+            out.update(res)
+            cost += c
+            failed += f
+            done += 1
+            if progress_cb:
+                progress_cb(done, len(chunks))
+    info = {"submitted": len(keywords), "resolved": sum(1 for v in out.values() if v),
+            "failed": failed, "cost": cost}
+    return out, info
+
+
+def dfs_post(keywords, location, auth):
+    """Submit queued Standard tasks (priority 1, the cheapest queue). Returns (id_to_kw, cost)."""
+    headers = {"Authorization": "Basic " + auth, "Content-Type": "application/json"}
+    id_to_kw, cost = {}, 0.0
+    for i in range(0, len(keywords), 100):
+        chunk = keywords[i:i + 100]
+        payload = [{"keyword": k, "location_name": location, "language_code": "en",
+                    "device": "desktop", "priority": 1} for k in chunk]
+        try:
+            r = requests.post(DFS_BASE + "/task_post", headers=headers, json=payload, timeout=60)
+            r.raise_for_status()
+            j = r.json()
+        except Exception:
+            j = {}
+        cost += float(j.get("cost") or 0.0)
+        for k, task in zip(chunk, j.get("tasks") or []):
+            if task.get("id"):
+                id_to_kw[task["id"]] = k
+    return id_to_kw, cost
+
+
+def dfs_collect(id_to_kw, auth, progress_cb=None, timeout_s=1200, poll_s=8):
+    """Poll tasks_ready and fetch advanced results. Returns (intent_map, timed_out_count)."""
+    headers = {"Authorization": "Basic " + auth}
+    pending, out = dict(id_to_kw), {}
+    deadline = time.time() + timeout_s
+    while pending and time.time() < deadline:
+        ready = []
+        try:
+            r = requests.get(DFS_BASE + "/tasks_ready", headers=headers, timeout=60)
+            r.raise_for_status()
+            for task in (r.json().get("tasks") or []):
+                for res in (task.get("result") or []):
+                    if res.get("id") in pending:
+                        ready.append(res["id"])
+        except Exception:
+            ready = []
+        for rid in ready:
+            types = []
+            try:
+                rr = requests.get(f"{DFS_BASE}/task_get/advanced/{rid}", headers=headers, timeout=60)
+                rr.raise_for_status()
+                for t in (rr.json().get("tasks") or []):
+                    for res in (t.get("result") or []):
+                        types = res.get("item_types") or []
+                        break
+                out[pending[rid]] = _intent_from_item_types(types)
+            except Exception:
+                out[pending[rid]] = None
+            pending.pop(rid, None)
+            if progress_cb:
+                progress_cb(len(out), len(id_to_kw))
+        if pending:
+            time.sleep(poll_s)
+    for rid, kw in pending.items():
+        out.setdefault(kw, None)
+    return out, len(pending)
+
+
 # ----------------------------- Sidebar -----------------------------
 with st.sidebar:
     st.header("Setup")
@@ -61,6 +192,23 @@ with st.sidebar:
         help="Lower = tighter, more granular topics. Higher = broader, fewer topics. "
              "0.25 is the validated default.",
     )
+
+    st.header("Intent")
+    intent_source = st.radio(
+        "Intent source",
+        ["Text (fast, free)", "DataForSEO SERP (reads the live SERP, costs credits)"],
+        index=1,
+        help="Text reads intent from the keyword wording. DataForSEO reads each keyword's live SERP "
+             "features, which is closer to how Google treats it. Text is the fallback either way.",
+    )
+    use_serp = intent_source.startswith("DataForSEO")
+    dfs_standard = st.radio(
+        "DataForSEO mode",
+        ["Standard queue (cheapest, slower)", "Live (instant, pricier)"],
+        index=0,
+    ).startswith("Standard")
+    serp_cap = st.number_input("Max SERP lookups (0 = no limit)", min_value=0, value=2000, step=100)
+    serp_location = st.text_input("SERP location", value="United Kingdom").strip() or "United Kingdom"
 
 # ----------------------------- 1. Upload -----------------------------
 st.subheader("1. Upload your keyword list")
@@ -217,11 +365,56 @@ def classify_intents(keywords, model):
 with st.spinner("Classifying intent from keyword text..."):
     intent_map = classify_intents(df["keyword"].tolist(), LABEL_MODEL)
 df["intent"] = df["keyword"].map(intent_map).fillna("Informational")
+df["intent_source"] = "text"
+
+# Override with SERP-derived intent where selected and available.
+if use_serp:
+    if not DFS_AUTH:
+        st.warning("DataForSEO SERP selected, but no credentials in secrets "
+                   "([dataforseo] login / password). Keeping the text intent.")
+    else:
+        cand = df.sort_values("volume", ascending=False, na_position="last")
+        if serp_cap and int(serp_cap) > 0:
+            cand = cand.head(int(serp_cap))
+        cand_kws = cand["keyword"].tolist()
+        prog = st.progress(0.0)
+        status = st.empty()
+        if dfs_standard:
+            status.caption("Submitting queued tasks; the Standard queue usually clears in a few minutes.")
+            id_to_kw, cost = dfs_post(cand_kws, serp_location, DFS_AUTH)
+            if not id_to_kw:
+                st.warning("DataForSEO accepted no tasks. Check the location name and credentials. Keeping text intent.")
+                serp_map, info = {}, {"submitted": len(cand_kws), "resolved": 0, "cost": cost, "timed_out": 0}
+            else:
+                serp_map, timed_out = dfs_collect(
+                    id_to_kw, DFS_AUTH,
+                    progress_cb=lambda d, t: (prog.progress(min(d / t, 1.0)),
+                                              status.caption(f"Collected {d}/{t} SERPs from the queue")))
+                info = {"submitted": len(cand_kws), "resolved": sum(1 for v in serp_map.values() if v),
+                        "cost": cost, "timed_out": timed_out}
+        else:
+            serp_map, info = dfs_live(
+                cand_kws, serp_location, DFS_AUTH,
+                progress_cb=lambda d, t: (prog.progress(min(d / t, 1.0)),
+                                          status.caption(f"Read SERPs: chunk {d}/{t}")))
+        for kw, it in serp_map.items():
+            if it:
+                df.loc[df["keyword"] == kw, "intent"] = it
+                df.loc[df["keyword"] == kw, "intent_source"] = "serp"
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Intent from SERP", int((df["intent_source"] == "serp").sum()))
+        c2.metric("Intent from text", int((df["intent_source"] == "text").sum()))
+        c3.metric("SERP resolved", f"{info.get('resolved', 0)}/{info.get('submitted', 0)}")
+        c4.metric("DataForSEO cost", f"${info.get('cost', 0):.2f}")
+        if info.get("timed_out"):
+            st.caption(f"{info['timed_out']} tasks did not return before the timeout and kept their text intent.")
+
 df["page"] = df["topic"] + " (" + df["intent"] + ")"
 n_pages = df.groupby(["topic_id", "intent"]).ngroups
 dist = ", ".join(f"{k}: {v}" for k, v in df["intent"].value_counts().items())
-st.success(f"{n_pages} pages across {n_topics} topics. Intent read from text ({LABEL_MODEL}).")
-st.caption(f"Intent distribution: {dist}. SERP-grounded intent is the planned next upgrade.")
+src = "SERP, with text as fallback" if (use_serp and DFS_AUTH) else "keyword text"
+st.success(f"{n_pages} pages across {n_topics} topics. Intent source: {src}.")
+st.caption(f"Intent distribution: {dist}.")
 
 # ----------------------------- 6. Topics and pages -----------------------------
 st.subheader("6. Topics and pages")
@@ -273,8 +466,9 @@ except Exception:
 
 # ----------------------------- 7. Export -----------------------------
 st.subheader("7. Export")
-kw_export = df[["keyword", "volume", "topic", "intent", "page"]].rename(
-    columns={"keyword": "Keyword", "volume": "Volume", "topic": "Topic", "intent": "Intent", "page": "Page"})
+kw_export = df[["keyword", "volume", "topic", "intent", "intent_source", "page"]].rename(
+    columns={"keyword": "Keyword", "volume": "Volume", "topic": "Topic", "intent": "Intent",
+             "intent_source": "Intent source", "page": "Page"})
 st.download_button("Download keyword mapping (CSV)",
                    kw_export.to_csv(index=False).encode("utf-8"),
                    "keyword_page_mapping.csv", "text/csv")
