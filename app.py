@@ -10,6 +10,7 @@
 
 import time
 import hashlib
+import threading
 import concurrent.futures as cf
 
 import numpy as np
@@ -136,10 +137,13 @@ st.success(f"{n_topics} topics. {n_singletons} are single keywords "
 st.subheader("4. Label topics")
 
 
-def label_topic(keywords):
+def label_topic(keywords, cache, lock):
+    # cache is a plain dict handed in from the main thread; never touch
+    # st.session_state from a worker thread.
     key = hashlib.md5("|".join(sorted(keywords)).encode()).hexdigest()
-    if key in st.session_state.label_cache:
-        return st.session_state.label_cache[key]
+    with lock:
+        if key in cache:
+            return cache[key]
     sample = keywords[:25]
     prompt = ("These keywords belong to one topic:\n" + ", ".join(sample) +
               "\n\nGive a concise topic name in 1 to 4 words (noun phrase, minimal punctuation). "
@@ -153,7 +157,8 @@ def label_topic(keywords):
         name = " ".join(resp.choices[0].message.content.strip().strip('"').strip("'").split()[:5]) or "Unlabelled"
     except Exception:
         name = sample[0] if sample else "Unlabelled"
-    st.session_state.label_cache[key] = name
+    with lock:
+        cache[key] = name
     return name
 
 
@@ -163,10 +168,12 @@ topic_kws = {
     for tid in ids
 }
 labels_map = {}
+label_cache = st.session_state.label_cache   # grab the dict on the main thread
+label_lock = threading.Lock()
 prog = st.progress(0.0)
 done = 0
 with cf.ThreadPoolExecutor(max_workers=12) as ex:
-    futs = {ex.submit(label_topic, topic_kws[tid]): tid for tid in ids}
+    futs = {ex.submit(label_topic, topic_kws[tid], label_cache, label_lock): tid for tid in ids}
     for fut in cf.as_completed(futs):
         labels_map[futs[fut]] = fut.result()
         done += 1
