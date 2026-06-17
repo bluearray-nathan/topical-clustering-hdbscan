@@ -1,21 +1,37 @@
-# app.py — Topical Clustering Tool
+# app.py — Keyword Page Mapping Tool
 # ----------------------------------------------------------------------------
-# Adds a hierarchical topical structure to the page-level clustering output
-# from Keyword Insights. Groups similar clusters into Parent Topics and Child
-# Subtopics to help map out a potential information architecture.
+# Replaces a SERP-overlap clustering tool (e.g. Keyword Insights) with an
+# intent-aware, embeddings-based approach.
+#
+# Pipeline (bottom-up):
+#   raw keywords (any source)
+#       -> embed (OpenAI text-embedding-3-small)
+#       -> classify intent from the text (OpenAI), source-agnostic
+#          (broad, signal-free head terms optionally resolved via SERP features)
+#       -> tight semantic micro-clusters (UMAP + HDBSCAN)
+#       -> split each micro-cluster by intent  => candidate PAGES (one page = one URL)
+#       -> group pages into PILLARS above (1 or 2 levels)
+#       -> score each page and recommend: Standalone / Section / Merge
+#       -> visualise + export
+#
+# Only the OpenAI key is required. The SerpApi key is optional and only used
+# when the broad-head SERP check is switched on.
 
 import time
+import json
 import math
 import hashlib
+import traceback
+import random
+import concurrent.futures as cf
+from collections import deque, Counter
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 import openai
 import hdbscan
-import concurrent.futures as cf
-import traceback
-import random
-from collections import deque
+import requests
 
 from sklearn.preprocessing import normalize
 from sklearn.decomposition import PCA
@@ -24,645 +40,799 @@ from sklearn.feature_extraction.text import CountVectorizer
 import plotly.express as px
 
 random.seed(42)
+np.random.seed(42)
 
 # ----------------------------- Page config & title -----------------------------
-st.set_page_config(page_title="Topical Clustering Tool", layout="wide")
-st.title("Topical Clustering Tool")
+st.set_page_config(page_title="Keyword Page Mapping Tool", layout="wide")
+st.title("Keyword Page Mapping Tool")
 
-# ----------------------------- Explanation (expandable) -----------------------------
 with st.expander("What this tool does and how it works"):
     st.markdown("""
-**What it does**  
-Adds a **hierarchical topical structure** to the page-level clustering output from Keyword Insights.  
-It groups similar clusters into **Parent Topics** and **Child Subtopics**, helping you **map out a potential information architecture** and identify content themes or silos.
+**What it does**
+Takes a raw keyword list from any source (Ahrefs, SEMrush, Search Console, Reddit, a manual list)
+and works out the **page architecture**: which keywords should sit on the same page, how those pages
+group into topical pillars, and which clusters are strong enough to **warrant their own page**.
+
+It is meant to replace SERP-overlap clustering tools rather than sit on top of them.
 
 ---
 
-### How it works (simple)
-1. **Upload your CSV** — Uses your `cluster`, `keyword`, and `search volume` columns.  
-2. **Generate embeddings** — Converts each cluster into a vector so similar ones sit close together.  
-3. **Group into Parent Topics** — Finds broader themes using HDBSCAN clustering.  
-4. **Split into Child Subtopics** — Refines each parent group into smaller related topics.  
-5. **Label topics (GPT)** — Suggests short, descriptive names based on examples and common phrases.  
-6. **Visualise & export** — Displays Parent Topics on a 2D scatter plot and exports to CSV.
+### How it works
+1. **Upload one or more CSVs.** Only a keyword column is required. Volume, position and source are optional.
+2. **Embed** every keyword so similar phrasings sit close together.
+3. **Classify intent** from the keyword text (transactional, commercial, informational, and so on).
+   Broad head terms that carry no intent in the words (for example "running trainers") can optionally
+   be resolved by reading the live SERP features, since that is the only honest signal for those.
+4. **Cluster** into tight semantic groups, then **split each group by intent** so a single theme that
+   mixes "buy" and "what is" becomes two candidate pages, not one.
+5. **Group pages into pillars** above.
+6. **Recommend** Standalone / Section / Merge for each page, using intent distinctness, breadth,
+   cross-source corroboration and volume (where you have it).
+7. **Visualise and export.**
 
 ---
 
-### Limitations (set expectations)
-- **Not perfect:** Clustering groups by textual similarity, not intent — manual review still helps.  
-- **Labels are suggestions:** GPT may simplify or generalise; rename as needed.  
-- **Input quality matters:** Ambiguous or repetitive names reduce accuracy.  
-- **Granularity trade-off:** Broader = cleaner but fewer topics; Finer = more detail but more noise.
+### Honest limitations
+- Intent from text is a model's read, not Google's behaviour. The optional SERP check is the truth test for broad heads.
+- Keywords with no search volume (for example Reddit) are scored on intent and breadth, so those pages are **opportunities to validate**, not guaranteed traffic.
+- Labels and recommendations are suggestions. Sense-check before handing to a client.
 """)
 
-# ----------------------------- API key -----------------------------
+# ----------------------------- API keys -----------------------------
 try:
     openai.api_key = st.secrets["openai"]["api_key"]
 except Exception:
-    st.error("❌ Missing OpenAI API key. Add it in Streamlit Cloud Secrets:\n\n[openai]\napi_key = \"sk-...\"")
+    st.error("Missing OpenAI API key. Add it in Streamlit secrets:\n\n[openai]\napi_key = \"sk-...\"")
     st.stop()
 
-# ----------------------------- Session init for label caches -----------------------------
-if "parent_labels_map" not in st.session_state:
-    st.session_state.parent_labels_map = {}
-if "child_labels_map" not in st.session_state:
-    st.session_state.child_labels_map = {}
-if "last_parent_hash" not in st.session_state:
-    st.session_state.last_parent_hash = None
-if "last_child_hash" not in st.session_state:
-    st.session_state.last_child_hash = None
+# SerpApi key is optional. Only needed if the SERP head-check is switched on.
+try:
+    SERPAPI_KEY = st.secrets["serpapi"]["api_key"]
+except Exception:
+    SERPAPI_KEY = None
 
-# ----------------------------- Defaults for labelling (sidebar section removed) -----------------------------
-MAX_LABEL_WORDS = 4
-AUTO_LABEL_TOPICS = True
-RELABEL_NOW = False
-LABEL_MODEL = "gpt-4o-mini-2024-07-18"
-LABEL_TEMP = 0.2
+# ----------------------------- Constants -----------------------------
+EMBED_MODEL = "text-embedding-3-small"   # cheaper embedding model, per spec
+LLM_MODEL = "gpt-4o-mini-2024-07-18"     # used for intent, labels and recommendations
+LLM_TEMP = 0.1
+
+# Internal intent set. Deliberately fixed and hidden: the user never configures this.
+INTENTS = [
+    "Transactional",            # buy, price, quote, sign up, for sale
+    "Commercial",               # best, top, review, vs, alternatives
+    "Informational-Howto",      # how to, guide, fix, tutorial
+    "Informational-Definitional",  # what is, meaning, examples, ideas
+    "Navigational",             # a brand or specific site
+    "Local",                    # near me, in <place>
+]
+# Map a resolved intent to the kind of page it implies (for grouping/merging logic).
+COMMERCIAL_INTENTS = {"Transactional", "Commercial", "Local"}
+
+# ----------------------------- Session init -----------------------------
+for key, default in [
+    ("intent_map", {}),
+    ("last_kw_hash", None),
+    ("page_labels_map", {}),
+    ("pillar_labels_map", {}),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 # ----------------------------- Sidebar -----------------------------
 with st.sidebar:
     st.header("Setup")
-    st.text("Embedding model")
-    st.code("text-embedding-3-large", language="text")
+    st.caption("Embedding model")
+    st.code(EMBED_MODEL, language="text")
 
-    st.header("Topic granularity (Parent)")
-    parent_granularity = st.radio(
-        "How broad should PARENT topics be?",
-        options=["Fewer, broader topics", "Balanced (recommended)", "More, finer subtopics"],
+    st.header("Page granularity")
+    granularity = st.radio(
+        "How finely should keywords be grouped into pages?",
+        options=["Fewer, broader pages", "Balanced (recommended)", "More, finer pages"],
         index=1,
-        help="Controls the high-level grouping. Broader = fewer parent clusters; Finer = more parent clusters."
+        help="Controls the tightness of the bottom-level semantic clustering before the intent split.",
     )
 
-    st.header("Topic granularity (Child)")
-    child_granularity = st.radio(
-        "How detailed should CHILD topics be?",
-        options=["Fewer, broader subtopics", "Balanced (recommended)", "More, finer subtopics"],
-        index=1,
-        help="Controls how aggressively we split each parent into child subtopics. All presets use EOM for consistency."
+    st.header("Pillars above pages")
+    pillar_levels = st.radio(
+        "How many grouping levels above the page?",
+        options=[1, 2],
+        index=0,
+        help="1 = Pillar > Page. 2 = Super-pillar > Pillar > Page.",
     )
 
-    # ------------------------- Child & Parent presets (EOM-only; finer → more topics) -------------------------
-    PARENT_PRESETS = {
-        "Fewer, broader topics": {
-            "umap": {"neighbors": 60, "components": 8},
-            "parent": {"min_cluster_size": 24, "min_samples": 2, "epsilon": 0.08},
-        },
-        "Balanced (recommended)": {
-            "umap": {"neighbors": 40, "components": 10},
-            "parent": {"min_cluster_size": 16, "min_samples": 2, "epsilon": 0.06},
-        },
-        "More, finer subtopics": {
-            "umap": {"neighbors": 20, "components": 15},
-            "parent": {"min_cluster_size": 10, "min_samples": 3, "epsilon": 0.04},
-        },
+    st.header("Warrants its own page")
+    volume_floor = st.number_input(
+        "Minimum monthly volume for a standalone page",
+        min_value=0, value=100, step=50,
+        help="Pages whose keywords have volume below this fold into a parent as a section. "
+             "Pages with no volume data are judged on intent and breadth instead.",
+    )
+    min_keywords = st.number_input(
+        "Minimum keywords for a standalone page",
+        min_value=1, value=3, step=1,
+        help="A handful of near-identical keywords is a heading, not a page.",
+    )
+
+    st.header("Broad head terms")
+    use_serp = st.checkbox(
+        "Resolve broad head terms with live SERP features (uses SerpApi credits)",
+        value=False,
+        help="Broad terms like 'running trainers' carry no intent in the words. "
+             "When on, the tool reads the live SERP (ads, shopping, snippets) to classify just those.",
+    )
+    serp_cap = st.number_input(
+        "Max SERP lookups per run",
+        min_value=0, value=100, step=25,
+        help="Hard cap so a single run cannot eat your monthly SerpApi budget.",
+    )
+    serp_country = st.text_input("SERP country (ISO-2)", value="gb", max_chars=2).strip().lower() or "gb"
+
+    # Granularity presets for the bottom-level micro-clustering.
+    GRAN_PRESETS = {
+        "Fewer, broader pages": {"neighbors": 30, "components": 10, "mcs": 8, "ms": 2, "eps": 0.06},
+        "Balanced (recommended)": {"neighbors": 15, "components": 10, "mcs": 4, "ms": 1, "eps": 0.04},
+        "More, finer pages": {"neighbors": 8, "components": 8, "mcs": 3, "ms": 1, "eps": 0.02},
     }
+    G = GRAN_PRESETS[granularity]
 
-    # CHILD_PRESETS mirror original behaviour; all use EOM.
-    # Ensure "More, finer" yields more splits by shrinking per-parent min_cluster_size via higher k_divisor.
-    CHILD_PRESETS = {
-        "Fewer, broader subtopics": {
-            "child_base": {"mcs": 10, "ms": 2, "eps": 0.05},
-            "adaptive": {"k_divisor": 8, "alpha_eps": 0.90, "eps_low": 0.02, "eps_high": 0.10},
-        },
-        "Balanced (recommended)": {
-            "child_base": {"mcs": 8, "ms": 2, "eps": 0.04},
-            "adaptive": {"k_divisor": 12, "alpha_eps": 0.90, "eps_low": 0.01, "eps_high": 0.08},
-        },
-        "More, finer subtopics": {
-            "child_base": {"mcs": 6, "ms": 2, "eps": 0.03},
-            # ORIGINAL had k_divisor=16; set to 20 so min_cluster_size shrinks → more children
-            "adaptive": {"k_divisor": 20, "alpha_eps": 0.85, "eps_low": 0.01, "eps_high": 0.06},
-        },
-    }
-
-    p_parent = PARENT_PRESETS[parent_granularity]
-    p_child = CHILD_PRESETS[child_granularity]
-
-    UMAP_NEIGHBORS = p_parent["umap"]["neighbors"]
-    UMAP_COMPONENTS = p_parent["umap"]["components"]
-    min_cluster_size_parent = p_parent["parent"]["min_cluster_size"]
-    min_samples_parent = p_parent["parent"]["min_samples"]
-    epsilon_parent = p_parent["parent"]["epsilon"]
-
-    min_cluster_size_child_base = p_child["child_base"]["mcs"]
-    min_samples_child_base = p_child["child_base"]["ms"]
-    epsilon_child_base = p_child["child_base"]["eps"]
-    k_divisor = p_child["adaptive"]["k_divisor"]
-    alpha_eps = p_child["adaptive"]["alpha_eps"]
-    eps_low_bound = p_child["adaptive"]["eps_low"]
-    eps_high_bound = p_child["adaptive"]["eps_high"]
-
-# ----------------------------- Upload data -----------------------------
-st.subheader("1️⃣ Upload your CSV")
-file = st.file_uploader("Upload a CSV with columns: cluster, keyword, search volume", type=["csv"])
-if not file:
-    st.info("Upload your CSV to begin.")
+# ----------------------------- Step 1: Upload + column mapping -----------------------------
+st.subheader("1. Upload your keyword list")
+files = st.file_uploader(
+    "Upload one or more CSVs. Only a keyword column is required.",
+    type=["csv"], accept_multiple_files=True,
+)
+if not files:
+    st.info("Upload at least one CSV to begin.")
     st.stop()
 
-try:
-    df_raw = pd.read_csv(file)
-except Exception:
-    st.error("Could not read CSV. Please check the file encoding/format.")
-    st.code(traceback.format_exc())
+frames = []
+for f in files:
+    try:
+        part = pd.read_csv(f)
+    except Exception:
+        st.error(f"Could not read {f.name}. Check the encoding/format.")
+        st.code(traceback.format_exc())
+        st.stop()
+    part.columns = [str(c).strip() for c in part.columns]
+    part["__source_file__"] = f.name
+    frames.append(part)
+
+df_in = pd.concat(frames, ignore_index=True, sort=False)
+all_cols = [c for c in df_in.columns if c != "__source_file__"]
+
+st.markdown("**Map your columns** (we only need the keyword; the rest are optional but improve the output).")
+c1, c2, c3, c4 = st.columns(4)
+
+
+def _guess(cands, options):
+    low = {o.lower(): o for o in options}
+    for cand in cands:
+        if cand in low:
+            return low[cand]
+    return None
+
+
+with c1:
+    kw_col = st.selectbox(
+        "Keyword column (required)", options=all_cols,
+        index=(all_cols.index(_guess(["keyword", "keywords", "query", "term"], all_cols))
+               if _guess(["keyword", "keywords", "query", "term"], all_cols) else 0),
+    )
+with c2:
+    vol_opts = ["(none)"] + all_cols
+    vguess = _guess(["search volume", "volume", "vol", "avg. monthly searches", "searches"], all_cols)
+    vol_col = st.selectbox("Volume column (optional)", options=vol_opts,
+                           index=(vol_opts.index(vguess) if vguess else 0))
+with c3:
+    pos_opts = ["(none)"] + all_cols
+    pguess = _guess(["position", "rank", "current position"], all_cols)
+    pos_col = st.selectbox("Position column (optional)", options=pos_opts,
+                           index=(pos_opts.index(pguess) if pguess else 0))
+with c4:
+    src_opts = ["(use file name)"] + all_cols
+    sguess = _guess(["source", "origin"], all_cols)
+    src_col = st.selectbox("Source column (optional)", options=src_opts,
+                           index=(src_opts.index(sguess) if sguess else 0))
+
+# Build a clean working frame.
+work = pd.DataFrame()
+work["keyword"] = df_in[kw_col].astype(str).str.strip()
+work["volume"] = (pd.to_numeric(df_in[vol_col], errors="coerce") if vol_col != "(none)" else np.nan)
+work["position"] = (pd.to_numeric(df_in[pos_col], errors="coerce") if pos_col != "(none)" else np.nan)
+work["source"] = (df_in[src_col].astype(str) if src_col != "(use file name)" else df_in["__source_file__"])
+
+work = work[work["keyword"].str.len() > 0].copy()
+
+# Deduplicate the same keyword across sources: keep max known volume, join sources.
+if len(work):
+    agg = (
+        work.groupby("keyword")
+        .agg(
+            volume=("volume", "max"),
+            position=("position", "min"),
+            source=("source", lambda s: ", ".join(sorted(set(map(str, s))))),
+            n_sources=("source", lambda s: len(set(map(str, s)))),
+        )
+        .reset_index()
+    )
+else:
+    agg = work
+
+if len(agg) < 5:
+    st.error("Need at least 5 distinct keywords to cluster. Add more rows.")
     st.stop()
 
-df_raw.columns = [c.strip().lower() for c in df_raw.columns]
-required_cols = {"cluster", "keyword", "search volume"}
-if not required_cols.issubset(df_raw.columns):
-    st.error("CSV must include columns: cluster, keyword, search volume (case-insensitive).")
-    st.stop()
+has_volume = agg["volume"].notna().any()
+st.success(f"Loaded {len(agg)} distinct keywords from {len(files)} file(s). "
+           f"{'Volume present.' if has_volume else 'No volume data — pages will be judged on intent and breadth.'}")
 
-if len(df_raw) == 0:
-    st.warning("The CSV has no rows.")
-    st.stop()
+# ----------------------------- Step 2: Embeddings -----------------------------
+st.subheader("2. Embed keywords")
 
-st.success(f"✅ Loaded {len(df_raw)} page-level clusters.")
-df_raw["descriptive_name"] = df_raw["cluster"].astype(str)
-
-# ----------------------------- Embeddings -----------------------------
-st.subheader("2️⃣ Generate embeddings")
 
 @st.cache_data(show_spinner=False)
-def embed_texts(texts):
-    model = "text-embedding-3-large"
-    vecs = []
+def embed_texts(texts, model):
     texts = [t if isinstance(t, str) else "" for t in texts]
-    for i in range(0, len(texts), 100):
-        batch = texts[i:i+100]
+    vecs = []
+    for i in range(0, len(texts), 200):
+        batch = texts[i:i + 200]
         resp = openai.embeddings.create(model=model, input=batch)
         vecs.extend([d.embedding for d in resp.data])
-        time.sleep(0.10)  # simple pacing
+        time.sleep(0.05)
     return np.array(vecs, dtype=np.float32)
 
+
 try:
-    clusters_list = df_raw["cluster"].fillna("").astype(str).tolist()
-    if all(s.strip() == "" for s in clusters_list):
-        st.error("All `cluster` values are empty. Please provide non-empty cluster strings.")
-        st.stop()
-
-    embeddings = embed_texts(clusters_list)
-    if embeddings.size == 0 or embeddings.shape[0] != len(df_raw):
-        st.error("Failed to create embeddings. Please verify input data.")
-        st.stop()
-
+    with st.spinner("Creating embeddings..."):
+        embeddings = embed_texts(agg["keyword"].tolist(), EMBED_MODEL)
     embeddings = np.nan_to_num(embeddings, posinf=0.0, neginf=0.0)
-    embeddings = normalize(embeddings)  # cosine-friendly
+    embeddings = normalize(embeddings)
+    st.success(f"Created {len(embeddings)} embeddings.")
 except Exception:
     st.error("Error while creating embeddings.")
     st.code(traceback.format_exc())
     st.stop()
 
-st.success(f"✅ Created {len(embeddings)} embeddings.")
+# ----------------------------- Step 3: Intent classification -----------------------------
+st.subheader("3. Classify intent")
 
-# ----------------------------- Smoothing -----------------------------
-st.subheader("3️⃣ Smoothing")
+
+def _heuristic_intent(kw: str) -> str:
+    """Cheap modifier-based fallback when the model is unavailable."""
+    k = f" {kw.lower()} "
+    if any(t in k for t in [" near me ", " nearby ", " in london ", " in manchester "]):
+        return "Local"
+    if any(t in k for t in [" buy ", " price ", " cost ", " for sale ", " cheap ", " quote ", " deal ", " discount "]):
+        return "Transactional"
+    if any(t in k for t in [" best ", " top ", " review ", " reviews ", " vs ", " versus ", " alternative ", " compare "]):
+        return "Commercial"
+    if any(t in k for t in [" how to ", " how do ", " guide ", " tutorial ", " fix ", " repair ", " steps "]):
+        return "Informational-Howto"
+    if any(t in k for t in [" what is ", " what are ", " meaning ", " definition ", " examples ", " ideas ", " why "]):
+        return "Informational-Definitional"
+    return "Unknown"
+
+
+@st.cache_data(show_spinner=False)
+def classify_intents_llm(keywords, model, temp):
+    """
+    Batched intent classification straight from the keyword text.
+    Returns a dict keyword -> {"intent": str, "ambiguous": bool}.
+    """
+    out = {}
+    BATCH = 40
+    sys = (
+        "You are an SEO search-intent classifier. For each keyword decide the dominant search intent "
+        "a searcher has, choosing exactly one label from this set: "
+        + ", ".join(INTENTS) + ". "
+        "Also set ambiguous=true when the keyword is a short, broad head term whose intent cannot be told "
+        "from the words alone (for example a bare product noun like 'running trainers'); otherwise false. "
+        'Reply only as JSON: {"results":[{"keyword":"...","intent":"...","ambiguous":true|false}]}.'
+    )
+    for i in range(0, len(keywords), BATCH):
+        batch = keywords[i:i + BATCH]
+        user = "Classify these keywords:\n" + "\n".join(f"- {k}" for k in batch)
+        try:
+            resp = openai.chat.completions.create(
+                model=model, temperature=temp,
+                response_format={"type": "json_object"},
+                messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+            )
+            data = json.loads(resp.choices[0].message.content)
+            for row in data.get("results", []):
+                kw = str(row.get("keyword", "")).strip()
+                intent = str(row.get("intent", "")).strip()
+                if intent not in INTENTS:
+                    intent = _heuristic_intent(kw)
+                out[kw] = {"intent": intent, "ambiguous": bool(row.get("ambiguous", False))}
+        except Exception:
+            for k in batch:
+                out[k] = {"intent": _heuristic_intent(k), "ambiguous": len(k.split()) <= 2}
+    # Guarantee every keyword is covered.
+    for k in keywords:
+        if k not in out:
+            out[k] = {"intent": _heuristic_intent(k), "ambiguous": len(k.split()) <= 2}
+    return out
+
+
+try:
+    with st.spinner("Classifying intent from keyword text..."):
+        intent_info = classify_intents_llm(agg["keyword"].tolist(), LLM_MODEL, LLM_TEMP)
+    agg["intent"] = agg["keyword"].map(lambda k: intent_info[k]["intent"])
+    agg["intent_ambiguous"] = agg["keyword"].map(lambda k: intent_info[k]["ambiguous"])
+    st.success("Intent classified from text.")
+except Exception:
+    st.error("Error during intent classification.")
+    st.code(traceback.format_exc())
+    st.stop()
+
+# ----------------------------- Step 3b: Optional SERP feature resolution for broad heads -----------------------------
+def serp_intent_from_features(keyword, country, api_key):
+    """
+    Read the live SERP and infer intent from its feature set.
+    ads + shopping  -> Transactional ; shopping only / many ads -> Commercial
+    local pack      -> Local
+    answer box / PAA / no commercial features -> Informational
+    Returns an intent label or None on failure.
+    """
+    try:
+        r = requests.get(
+            "https://serpapi.com/search.json",
+            params={"engine": "google", "q": keyword, "gl": country, "hl": "en", "api_key": api_key},
+            timeout=20,
+        )
+        r.raise_for_status()
+        j = r.json()
+    except Exception:
+        return None
+
+    has_shopping = bool(j.get("shopping_results") or j.get("immersive_products"))
+    has_ads = bool(j.get("ads") or j.get("shopping_ads"))
+    has_local = bool(j.get("local_results") or j.get("local_map"))
+    has_answer = bool(j.get("answer_box") or j.get("knowledge_graph"))
+    has_paa = bool(j.get("related_questions"))
+
+    if has_local:
+        return "Local"
+    if has_shopping and has_ads:
+        return "Transactional"
+    if has_shopping or has_ads:
+        return "Commercial"
+    if has_answer or has_paa:
+        return "Informational-Definitional"
+    return None
+
+
+if use_serp:
+    st.subheader("3b. Resolve broad head terms via SERP")
+    if not SERPAPI_KEY:
+        st.warning("SERP check is on but no SerpApi key is set. Add [serpapi] api_key in secrets. Skipping.")
+    else:
+        # Route only the broad/ambiguous heads, prioritised by volume, capped.
+        cand = agg[agg["intent_ambiguous"]].copy()
+        if "volume" in cand:
+            cand = cand.sort_values("volume", ascending=False, na_position="last")
+        cand = cand.head(int(serp_cap))
+        if len(cand) == 0:
+            st.info("No broad head terms needed a SERP check.")
+        else:
+            prog = st.progress(0.0)
+            done = 0
+            for kw in cand["keyword"].tolist():
+                resolved = serp_intent_from_features(kw, serp_country, SERPAPI_KEY)
+                if resolved:
+                    agg.loc[agg["keyword"] == kw, "intent"] = resolved
+                done += 1
+                prog.progress(done / len(cand))
+            st.success(f"Resolved {len(cand)} broad head term(s) from live SERP features.")
+
+# ----------------------------- Step 4: Semantic micro-clustering -----------------------------
+st.subheader("4. Cluster keywords semantically")
 try:
     from umap import UMAP
     n_samples = embeddings.shape[0]
-    n_neighbors = int(max(2, min(int(UMAP_NEIGHBORS), max(2, n_samples - 1))))
-    n_components = int(max(2, min(int(UMAP_COMPONENTS), min(embeddings.shape[1], max(2, n_samples - 1)))))
+    n_neighbors = int(max(2, min(G["neighbors"], n_samples - 1)))
+    n_components = int(max(2, min(G["components"], min(embeddings.shape[1], n_samples - 1))))
+    reducer = UMAP(n_neighbors=n_neighbors, min_dist=0.0, n_components=n_components,
+                   metric="cosine", random_state=42)
+    X = reducer.fit_transform(embeddings)
 
-    umap = UMAP(
-        n_neighbors=n_neighbors,
-        min_dist=0.0,
-        n_components=n_components,
-        metric="cosine",
-        random_state=42
-    )
-    X_for_cluster = umap.fit_transform(embeddings)
-    st.success(f"✅ UMAP applied (neighbors={n_neighbors}, components={n_components}).")
+    micro = hdbscan.HDBSCAN(
+        min_cluster_size=int(G["mcs"]), min_samples=int(G["ms"]),
+        cluster_selection_method="eom", cluster_selection_epsilon=float(G["eps"]),
+        metric="euclidean",
+    ).fit_predict(X)
+    agg["micro_id"] = micro
+    n_micro = len(set(micro)) - (1 if -1 in micro else 0)
+    st.success(f"Found {n_micro} semantic micro-clusters "
+               f"({(micro == -1).mean() * 100:.0f}% sat outside a cluster and are handled individually).")
 except Exception:
-    st.error("Error during smoothing.")
+    st.error("Error during semantic clustering.")
     st.code(traceback.format_exc())
     st.stop()
 
-# ----------------------------- HDBSCAN Pass A — Parents -----------------------------
-st.subheader("4️⃣ HDBSCAN")
-hdb_parent = dict(
-    min_cluster_size=int(min_cluster_size_parent),
-    min_samples=int(min_samples_parent),
-    cluster_selection_method="eom",  # EOM for parents
-    cluster_selection_epsilon=float(epsilon_parent),
-    metric="euclidean"
-)
-
+# ----------------------------- Step 5: Split micro-clusters by intent -> candidate pages -----------------------------
+st.subheader("5. Split by intent into candidate pages")
 try:
-    parenter = hdbscan.HDBSCAN(**hdb_parent)
-    labels_parent = parenter.fit_predict(X_for_cluster)
+    # A page = a micro-cluster restricted to one intent. Noise keywords (micro_id -1)
+    # each become their own single-keyword candidate page so nothing is silently dropped.
+    page_ids = np.full(len(agg), -1, dtype=int)
+    next_page = 0
+    micro_vals = agg["micro_id"].values
+    intent_vals = agg["intent"].values
 
-    df = df_raw.copy()
-    df["parent_id"] = labels_parent
-    n_parents = len(set(labels_parent)) - (1 if -1 in labels_parent else 0)
-    noise_parent_pct = (labels_parent == -1).mean() * 100 if len(labels_parent) else 0.0
-    st.success(f"✅ Parent clusters: {n_parents} • Parent noise: {noise_parent_pct:.1f}%")
+    for mid in sorted(set(micro_vals)):
+        idx = np.where(micro_vals == mid)[0]
+        if mid == -1:
+            for j in idx:               # each noise keyword stands alone
+                page_ids[j] = next_page
+                next_page += 1
+            continue
+        for intent in sorted(set(intent_vals[idx])):
+            sub = idx[intent_vals[idx] == intent]
+            page_ids[sub] = next_page
+            next_page += 1
+
+    agg["page_id"] = page_ids
+    st.success(f"Formed {agg['page_id'].nunique()} candidate pages "
+               f"(intent split turned {n_micro} themes into more precise page targets).")
 except Exception:
-    st.error("Error during HDBSCAN (parents).")
+    st.error("Error while splitting by intent.")
     st.code(traceback.format_exc())
     st.stop()
 
-# ----------------------------- Adaptive helpers for child params -----------------------------
-def _median_knn_distance(X, k=10):
-    """
-    Median distance to the k-th nearest neighbour (euclidean) for X.
-    """
-    from sklearn.metrics import pairwise_distances
-    D = pairwise_distances(X, metric="euclidean")
-    knn_k = min(k + 1, D.shape[0])  # include self; take last among first k+1 sorted
-    sorted_rows = np.sort(D, axis=1)[:, :knn_k]
-    kth = sorted_rows[:, -1]
-    return float(np.median(kth))
+# Page centroids (for pillar grouping and merge detection).
+page_index = sorted(agg["page_id"].unique())
+centroids = np.vstack([
+    normalize(embeddings[np.where(agg["page_id"].values == pid)[0]].mean(axis=0, keepdims=True))[0]
+    for pid in page_index
+])
+centroid_of = {pid: centroids[i] for i, pid in enumerate(page_index)}
 
-def derive_child_params_for_parent(parent_indices, *,
-                                   base_low_mcs=5, base_high_mcs=50,
-                                   k_divisor=12,
-                                   X_for_cluster=None,
-                                   alpha=0.9,
-                                   eps_low=0.01, eps_high=0.08):
-    """
-    Auto-scales child HDBSCAN params for a *single* parent (UMAP euclidean space).
-    Returns: (min_cluster_size_child_i, min_samples_child_i, epsilon_child_i, do_children)
-    """
-    n = len(parent_indices)
-    # 1) min_cluster_size scales with parent size
-    mcs = int(np.clip(round(n / k_divisor), base_low_mcs, base_high_mcs))
-
-    # 2) density proxy -> min_samples via median kNN distance
-    X_sub = X_for_cluster[parent_indices]
-    med_knn = _median_knn_distance(X_sub, k=min(10, max(2, n - 1)))
-
-    if med_knn <= 0.15:
-        min_samples = 5
-    elif med_knn <= 0.25:
-        min_samples = 4
-    elif med_knn <= 0.35:
-        min_samples = 3
-    elif med_knn <= 0.50:
-        min_samples = 2
+# ----------------------------- Step 6: Group pages into pillars -----------------------------
+st.subheader("6. Group pages into pillars")
+try:
+    pillar_of = {}
+    superpillar_of = {}
+    if len(page_index) <= 2:
+        for pid in page_index:
+            pillar_of[pid] = 0
+            superpillar_of[pid] = 0
     else:
-        min_samples = 1
+        p_neighbors = int(max(2, min(15, len(page_index) - 1)))
+        p_components = int(max(2, min(8, len(page_index) - 1)))
+        Xp = UMAP(n_neighbors=p_neighbors, min_dist=0.0, n_components=p_components,
+                  metric="cosine", random_state=42).fit_transform(centroids)
+        plabels = hdbscan.HDBSCAN(
+            min_cluster_size=2, min_samples=1, cluster_selection_method="eom", metric="euclidean",
+        ).fit_predict(Xp)
+        # Give pillar-noise pages their own singleton pillars.
+        nextp = (plabels.max() + 1) if len(plabels) and plabels.max() >= 0 else 0
+        fixed = []
+        for lab in plabels:
+            if lab == -1:
+                fixed.append(nextp); nextp += 1
+            else:
+                fixed.append(lab)
+        for i, pid in enumerate(page_index):
+            pillar_of[pid] = int(fixed[i])
 
-    # 3) epsilon from local spacing with bounds
-    epsilon = float(np.clip(alpha * med_knn, eps_low, eps_high))
+        if pillar_levels == 2:
+            # Super-pillars: cluster the pillar centroids.
+            pillar_ids = sorted(set(pillar_of.values()))
+            pcent = np.vstack([
+                normalize(np.mean([centroid_of[pid] for pid in page_index if pillar_of[pid] == plid],
+                                  axis=0, keepdims=True))[0]
+                for plid in pillar_ids
+            ])
+            if len(pillar_ids) <= 2:
+                sp_map = {plid: 0 for plid in pillar_ids}
+            else:
+                sp_labels = hdbscan.HDBSCAN(
+                    min_cluster_size=2, min_samples=1, cluster_selection_method="eom", metric="euclidean",
+                ).fit_predict(pcent)
+                nsp = (sp_labels.max() + 1) if len(sp_labels) and sp_labels.max() >= 0 else 0
+                sp_fixed = []
+                for lab in sp_labels:
+                    if lab == -1:
+                        sp_fixed.append(nsp); nsp += 1
+                    else:
+                        sp_fixed.append(lab)
+                sp_map = {plid: int(sp_fixed[i]) for i, plid in enumerate(pillar_ids)}
+            for pid in page_index:
+                superpillar_of[pid] = sp_map[pillar_of[pid]]
 
-    # 4) stability floor
-    if n < 2 * mcs:
-        return mcs, min_samples, epsilon, False  # skip child clustering
-
-    return mcs, min_samples, epsilon, True
-
-# ----------------------------- HDBSCAN Pass B — Children per Parent -----------------------------
-st.subheader("5️⃣ HDBSCAN (Children)")
-child_ids = np.full(len(df), -1, dtype=int)
-
-try:
-    next_child_base = 0  # ensures globally unique child ids
-    unique_parents = sorted(set(labels_parent))
-
-    for pid in unique_parents:
-        if pid == -1:
-            continue
-        idx = np.where(labels_parent == pid)[0]
-        if len(idx) == 0:
-            continue
-
-        # Derive per-parent child params; fallback baseline if anything odd happens
-        try:
-            mcs_i, ms_i, eps_i, do_children = derive_child_params_for_parent(
-                idx,
-                base_low_mcs=5, base_high_mcs=50,
-                k_divisor=int(k_divisor),        # from CHILD granularity
-                X_for_cluster=X_for_cluster,
-                alpha=float(alpha_eps),          # from CHILD granularity
-                eps_low=float(eps_low_bound),    # from CHILD granularity
-                eps_high=float(eps_high_bound)   # from CHILD granularity
-            )
-        except Exception:
-            mcs_i, ms_i, eps_i, do_children = (
-                int(min_cluster_size_child_base),
-                int(min_samples_child_base),
-                float(epsilon_child_base),
-                len(idx) >= 2 * int(min_cluster_size_child_base),
-            )
-
-        if not do_children:
-            # Too small to split reliably -> bucket as a single child
-            child_ids[idx] = next_child_base
-            next_child_base += 1
-            continue
-
-        # EOM for children as well (consistent everywhere)
-        child_params_local = dict(
-            min_cluster_size=int(mcs_i),
-            min_samples=int(ms_i),
-            cluster_selection_method="eom",
-            cluster_selection_epsilon=float(eps_i),
-            metric="euclidean"
-        )
-
-        ch_local = hdbscan.HDBSCAN(**child_params_local).fit_predict(X_for_cluster[idx])
-
-        # Map local child labels to global ids
-        unique_local = [c for c in sorted(set(ch_local)) if c != -1]
-        mapping = {c: (next_child_base + i) for i, c in enumerate(unique_local)}
-        child_ids[idx] = np.array([mapping.get(c, -1) for c in ch_local])
-        next_child_base += len(unique_local)
-
-    df["child_id"] = child_ids
-    n_children = len(set(child_ids)) - (1 if -1 in child_ids else 0)
-    noise_child_pct = (child_ids == -1).mean() * 100 if len(child_ids) else 0.0
-    st.success(f"✅ Child clusters: {n_children} • Child noise: {noise_child_pct:.1f}%")
+    agg["pillar_id"] = agg["page_id"].map(pillar_of)
+    if pillar_levels == 2:
+        agg["superpillar_id"] = agg["page_id"].map(superpillar_of)
+    st.success(f"Grouped {len(page_index)} pages into {len(set(pillar_of.values()))} pillar(s).")
 except Exception:
-    st.error("Error during HDBSCAN (children).")
+    st.error("Error while grouping pages into pillars.")
     st.code(traceback.format_exc())
     st.stop()
 
-# ----------------------------- Scalable facet-aware labelling helpers -----------------------------
-def top_facets(texts, top_k=10, ngram_range=(1,2), min_df=1, token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z\-]+\b"):
-    """
-    Returns a list of (phrase, count) for salient unigrams/bigrams in `texts`.
-    """
+# ----------------------------- Labelling helpers (reused, OpenAI) -----------------------------
+def top_facets(texts, top_k=10):
     if not texts:
         return []
-    cv = CountVectorizer(stop_words="english", ngram_range=ngram_range, min_df=min_df, token_pattern=token_pattern)
+    cv = CountVectorizer(stop_words="english", ngram_range=(1, 2), min_df=1,
+                         token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z\-]+\b")
     try:
-        X = cv.fit_transform(texts)
+        Xc = cv.fit_transform(texts)
     except ValueError:
         return []
-    counts = np.asarray(X.sum(axis=0)).ravel()
+    counts = np.asarray(Xc.sum(axis=0)).ravel()
     vocab = np.array(cv.get_feature_names_out())
     order = counts.argsort()[::-1]
-    pairs = [(vocab[i], int(counts[i])) for i in order[:top_k] if counts[i] > 0]
-    return pairs
+    return [(vocab[i], int(counts[i])) for i in order[:top_k] if counts[i] > 0]
 
-def facets_block(facets, max_lines=8):
-    if not facets:
-        return "Facet distribution: (no salient facets detected)"
-    total = sum(c for _, c in facets) or 1
-    lines = []
-    for phrase, cnt in facets[:max_lines]:
-        pct = 100.0 * cnt / total
-        lines.append(f"- {phrase}: {cnt} ({pct:.1f}%)")
-    return "Facet distribution:\n" + "\n".join(lines)
 
-def diversified_examples(indices, titles_all, embeddings, total_max=40):
-    """
-    Select representative examples covering sub-modes using KMeans over the cluster slice.
-    """
-    n = len(indices)
+def diversified_examples(kws, vecs, total_max=25):
+    n = len(kws)
     if n <= total_max:
-        return [titles_all[i] for i in indices]
-
-    # k ~ sqrt(n), bounded between 5 and total_max (cap 20 to avoid tiny clusters exploding)
-    k = int(np.clip(int(np.sqrt(n)), 5, min(20, total_max)))
-    vecs = embeddings[indices]
+        return list(kws)
+    k = int(np.clip(int(np.sqrt(n)), 5, min(15, total_max)))
     km = KMeans(n_clusters=k, n_init="auto", random_state=42)
     labels = km.fit_predict(vecs)
-    centers = km.cluster_centers_
-
     picked = []
-    used = set()
     for c in range(k):
-        idx_c = np.where(labels == c)[0]
-        if idx_c.size == 0:
-            continue
-        sub = vecs[idx_c]
-        d = ((sub - centers[c])**2).sum(axis=1)
-        best_local = indices[idx_c[d.argmin()]]
-        if best_local not in used:
-            picked.append(titles_all[best_local])
-            used.add(best_local)
-
-    # top up to total_max with random remaining examples
-    remaining = [i for i in indices if i not in used]
-    if remaining:
-        need = max(0, total_max - len(picked))
-        picked.extend([titles_all[i] for i in random.sample(remaining, min(need, len(remaining)))])
+        ci = np.where(labels == c)[0]
+        if ci.size:
+            d = ((vecs[ci] - km.cluster_centers_[c]) ** 2).sum(axis=1)
+            picked.append(kws[ci[d.argmin()]])
     return picked[:total_max]
 
-def label_topic_short(titles_all, indices, embeddings, model_name, temp, max_words,
-                      total_max_examples=40, facets_top_k=10):
-    """
-    titles_all: list[str] for the whole dataset (indexable by absolute row index)
-    indices: np.array/list of absolute row indices belonging to the cluster to label
-    embeddings: np.ndarray of all row embeddings (already normalized)
-    """
-    # 1) Diverse sample
-    sample = diversified_examples(indices, titles_all, embeddings, total_max=total_max_examples)
 
-    # 2) Facet distribution
-    cluster_texts = [titles_all[i] for i in indices]
-    facets = top_facets(cluster_texts, top_k=facets_top_k)
-    facts = facets_block(facets)
-
-    # 3) Guardrails
-    dominance_rule = (
-        "Name the topic to reflect the overall cluster. "
-        "If multiple distinct facets (e.g., locations, formats, levels, audiences, industries) are present, "
-        "avoid naming a single facet unless it clearly dominates the cluster. "
-        "Prefer inclusive or general phrasing in those cases."
+def label_one(kws, vecs, kind="page"):
+    sample = diversified_examples(list(kws), vecs, total_max=25)
+    facets = top_facets(list(kws))
+    fac = ", ".join(f"{p}" for p, _ in facets[:8])
+    sys = "You are an SEO content analyst. Reply with only the label, nothing else."
+    user = (
+        f"These keywords belong to one {kind}:\n{', '.join(sample)}\n\n"
+        f"Common phrases: {fac}\n\n"
+        f"Give a concise, human-friendly {kind} name in 1-4 words (noun phrase, minimal punctuation)."
     )
-
-    joined = ", ".join(sample)
-    prompt = (
-        f"{facts}\n\n"
-        "These page titles are about a similar topic:\n"
-        f"{joined}\n\n"
-        f"{dominance_rule}\n"
-        "Return a concise, human-friendly topic name in 1–4 words (noun phrase; minimal punctuation). "
-        "Use 1 word if it fully captures the theme; otherwise 2–4 words for clarity."
-    )
-
-    resp = openai.chat.completions.create(
-        model=model_name,
-        messages=[
-            {"role": "system", "content": "You are an SEO content analyst."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=temp,
-    )
-    text = resp.choices[0].message.content.strip()
-
-    # enforce word cap (hard backstop)
-    words = text.split()
-    if len(words) > max_words:
-        text = " ".join(words[:max_words])
-    return text
-
-def label_groups(df_in, id_col, label_col_name, label_model, label_temp, max_words,
-                 embeddings, titles_all, total_max_examples=40, facets_top_k=10):
-    unique_ids = [i for i in sorted(df_in[id_col].unique()) if i != -1]
-    labels_map = {-1: "Other"}  # renamed from "Noise / Misc" to "Other"
-    MAX_WORKERS = min(12, max(1, len(unique_ids)))
-    progress = st.progress(0.0)
-    status = st.empty()
-    done, total = 0, len(unique_ids)
-
-    timings = deque(maxlen=20)
-
-    def one(gid):
-        idx = np.where(df_in[id_col].values == gid)[0]  # absolute row indices
-        start = time.time()
-        name = label_topic_short(
-            titles_all, idx, embeddings,
-            model_name=label_model, temp=label_temp, max_words=max_words,
-            total_max_examples=total_max_examples, facets_top_k=facets_top_k
+    try:
+        resp = openai.chat.completions.create(
+            model=LLM_MODEL, temperature=0.2,
+            messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
         )
-        dur = time.time() - start
-        return gid, name, dur
+        txt = resp.choices[0].message.content.strip().strip('"').strip("'")
+        return " ".join(txt.split()[:5]) or "Unlabelled"
+    except Exception:
+        return facets[0][0].title() if facets else "Unlabelled"
 
-    with cf.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        futures = [ex.submit(one, gid) for gid in unique_ids]
-        for f in cf.as_completed(futures):
-            gid, name, dur = f.result()
-            labels_map[gid] = name
-            timings.append(dur)
+
+def label_groups(group_col):
+    ids = sorted(agg[group_col].unique())
+    out = {}
+    prog = st.progress(0.0)
+    done = 0
+
+    def work_one(gid):
+        idx = np.where(agg[group_col].values == gid)[0]
+        kind = "page" if group_col == "page_id" else "pillar"
+        return gid, label_one(agg["keyword"].values[idx], embeddings[idx], kind=kind)
+
+    with cf.ThreadPoolExecutor(max_workers=min(12, max(1, len(ids)))) as ex:
+        for fut in cf.as_completed([ex.submit(work_one, g) for g in ids]):
+            gid, name = fut.result()
+            out[gid] = name
             done += 1
-            progress.progress(done / max(1, total))
-            spc = float(np.mean(timings)) if len(timings) else 0.0
-            eta_sec = max(total - done, 0) * spc
-            status.text(f"Labeled {done}/{total} • avg {spc:.2f}s • ETA ~{int(eta_sec//60)}m {int(eta_sec%60)}s")
+            prog.progress(done / len(ids))
+    return out
 
-    df_in[label_col_name] = df_in[id_col].map(labels_map).astype(str)
-    return labels_map
 
-# ----------------------------- Topic labelling (parents then children) -----------------------------
+# ----------------------------- Step 7: Label pages and pillars -----------------------------
+st.subheader("7. Label pages and pillars")
 try:
-    # Hashes for cache invalidation
-    parent_hash = hashlib.md5(np.array(df["parent_id"], dtype=np.int64).tobytes()).hexdigest()
-    child_hash  = hashlib.md5(np.array(df[["parent_id","child_id"]], dtype=np.int64).tobytes()).hexdigest()
-
-    should_label_parents = AUTO_LABEL_TOPICS and (st.session_state.last_parent_hash != parent_hash or RELABEL_NOW)
-    should_label_children = AUTO_LABEL_TOPICS and (st.session_state.last_child_hash != child_hash or RELABEL_NOW)
-
-    titles_all = df["descriptive_name"].tolist()
-
-    if AUTO_LABEL_TOPICS:
-        if should_label_parents:
-            st.subheader("6️⃣ Labelling parents")
-            st.session_state.parent_labels_map = label_groups(
-                df, "parent_id", "parent_label", LABEL_MODEL, LABEL_TEMP, MAX_LABEL_WORDS,
-                embeddings=embeddings, titles_all=titles_all, total_max_examples=40, facets_top_k=10
-            )
-            st.session_state.last_parent_hash = parent_hash
-        else:
-            if "parent_label" not in df.columns and st.session_state.parent_labels_map:
-                df["parent_label"] = df["parent_id"].map(st.session_state.parent_labels_map).astype(str)
-
-        if should_label_children:
-            st.subheader("7️⃣ Labelling children")
-            st.session_state.child_labels_map = label_groups(
-                df, "child_id", "child_label", LABEL_MODEL, LABEL_TEMP, MAX_LABEL_WORDS,
-                embeddings=embeddings, titles_all=titles_all, total_max_examples=40, facets_top_k=10
-            )
-            st.session_state.last_child_hash = child_hash
-        else:
-            if "child_label" not in df.columns and st.session_state.child_labels_map:
-                df["child_label"] = df["child_id"].map(st.session_state.child_labels_map).astype(str)
-    else:
-        df["parent_label"] = df["parent_id"].astype(str)
-        df["child_label"]  = df["child_id"].astype(str)
-
-    if "parent_label" not in df.columns:
-        df["parent_label"] = df["parent_id"].map(st.session_state.parent_labels_map or {-1: "Other"}).astype(str)
-    if "child_label" not in df.columns:
-        df["child_label"] = df["child_id"].map(st.session_state.child_labels_map or {-1: "Other"}).astype(str)
-
-    st.success("✅ Labelling step complete.")
+    page_labels = label_groups("page_id")
+    agg["page_label"] = agg["page_id"].map(page_labels)
+    pillar_labels = label_groups("pillar_id")
+    agg["pillar_label"] = agg["pillar_id"].map(pillar_labels)
+    if pillar_levels == 2:
+        sp_labels_map = label_groups("superpillar_id")
+        agg["superpillar_label"] = agg["superpillar_id"].map(sp_labels_map)
+    st.success("Labelling complete.")
 except Exception:
-    st.error("Error during topic labelling.")
+    st.error("Error during labelling.")
     st.code(traceback.format_exc())
     st.stop()
 
-# ----------------------------- Visualisation -----------------------------
-st.subheader("8️⃣ Visualise hierarchy (2D PCA)")
-try:
-    pca = PCA(n_components=2)
-    coords = pca.fit_transform(embeddings)
-    df["x"] = coords[:, 0]
-    df["y"] = coords[:, 1]
+# ----------------------------- Step 8: Page-worthiness recommendation -----------------------------
+st.subheader("8. Recommend Standalone / Section / Merge")
 
-    # Parent label only (no child symbol)
+
+def dominant_intent(series):
+    c = Counter(series)
+    return c.most_common(1)[0][0] if c else "Unknown"
+
+
+# Build a per-page feature table.
+page_rows = []
+for pid in page_index:
+    idx = np.where(agg["page_id"].values == pid)[0]
+    sub = agg.iloc[idx]
+    vol = sub["volume"].sum(min_count=1)
+    page_rows.append({
+        "page_id": pid,
+        "page_label": page_labels.get(pid, str(pid)),
+        "pillar_id": pillar_of[pid],
+        "pillar_label": pillar_labels.get(pillar_of[pid], str(pillar_of[pid])),
+        "intent": dominant_intent(sub["intent"]),
+        "n_keywords": int(len(sub)),
+        "total_volume": (float(vol) if pd.notna(vol) else np.nan),
+        "n_sources": int(sub["n_sources"].max() if "n_sources" in sub else 1),
+        "head_term": (sub.sort_values("volume", ascending=False, na_position="last")["keyword"].iloc[0]
+                      if len(sub) else ""),
+    })
+pages_df = pd.DataFrame(page_rows)
+
+
+def merge_target(pid):
+    """A sibling page in the same pillar with the same intent and very close centroid is a merge candidate."""
+    me = centroid_of[pid]
+    my_pillar = pillar_of[pid]
+    my_intent = pages_df.loc[pages_df["page_id"] == pid, "intent"].iloc[0]
+    best, best_sim = None, 0.0
+    for other in page_index:
+        if other == pid or pillar_of[other] != my_pillar:
+            continue
+        if pages_df.loc[pages_df["page_id"] == other, "intent"].iloc[0] != my_intent:
+            continue
+        sim = float(np.dot(me, centroid_of[other]))
+        if sim > best_sim:
+            best, best_sim = other, sim
+    return (best, best_sim)
+
+
+def heuristic_reco(row):
+    """Deterministic fallback recommendation, also used as a prior for the model."""
+    tgt, sim = merge_target(row["page_id"])
+    if tgt is not None and sim >= 0.93:
+        return "Merge", f"Near-duplicate of '{page_labels.get(tgt)}' (same pillar and intent, similarity {sim:.2f})."
+    if row["n_keywords"] < min_keywords:
+        return "Section", f"Only {row['n_keywords']} keyword(s); too thin to sustain a page."
+    if pd.notna(row["total_volume"]):
+        if row["total_volume"] >= volume_floor:
+            return "Standalone", f"Distinct {row['intent'].lower()} intent with {int(row['total_volume'])} monthly searches."
+        return "Section", f"Distinct intent but only {int(row['total_volume'])} searches, below the {int(volume_floor)} floor."
+    # No volume: lean on breadth and corroboration.
+    if row["n_keywords"] >= max(min_keywords + 2, 5) or row["n_sources"] >= 2:
+        return "Standalone (validate)", "No volume data, but breadth and/or multiple sources suggest real demand to validate."
+    return "Section", "No volume data and limited breadth; treat as a section until demand is confirmed."
+
+
+# Heuristic prior for every page.
+prior = pages_df.apply(heuristic_reco, axis=1, result_type="expand")
+pages_df["recommendation"] = prior[0]
+pages_df["reason"] = prior[1]
+
+# Optional: let the model weigh the signals (honours the "Claude/GPT weighs signals" choice).
+try:
+    feat = pages_df[["page_id", "page_label", "pillar_label", "intent",
+                     "n_keywords", "total_volume", "n_sources", "recommendation"]].copy()
+    feat["total_volume"] = feat["total_volume"].where(pd.notna(feat["total_volume"]), None)
+    sys = (
+        "You map keyword clusters to a site's page architecture. For each candidate page decide one of: "
+        "'Standalone' (warrants its own URL), 'Section' (fold into its pillar as a section), or "
+        "'Merge' (duplicate of a sibling). Weigh distinct search intent first, then breadth (n_keywords), "
+        "cross-source corroboration (n_sources), and volume where present. "
+        f"The user's standalone volume floor is {int(volume_floor)} monthly searches, but treat it as guidance "
+        "not an absolute gate, especially where volume is missing (those are opportunities to validate). "
+        "A 'recommendation' field is provided as a prior; override it only with good reason. "
+        'Reply only as JSON: {"results":[{"page_id":int,"recommendation":"...","reason":"one short sentence"}]}.'
+    )
+    recos = {}
+    records = feat.to_dict(orient="records")
+    BATCH = 50
+    with st.spinner("Weighing page-worthiness..."):
+        for i in range(0, len(records), BATCH):
+            chunk = records[i:i + BATCH]
+            user = "Decide for these candidate pages:\n" + json.dumps(chunk, default=str)
+            resp = openai.chat.completions.create(
+                model=LLM_MODEL, temperature=LLM_TEMP,
+                response_format={"type": "json_object"},
+                messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+            )
+            for r in json.loads(resp.choices[0].message.content).get("results", []):
+                recos[int(r["page_id"])] = (str(r.get("recommendation", "")).strip(),
+                                            str(r.get("reason", "")).strip())
+    if recos:
+        pages_df["recommendation"] = pages_df["page_id"].map(
+            lambda p: recos.get(p, (None, None))[0] or pages_df.loc[pages_df["page_id"] == p, "recommendation"].iloc[0])
+        pages_df["reason"] = pages_df["page_id"].map(
+            lambda p: recos.get(p, (None, None))[1] or pages_df.loc[pages_df["page_id"] == p, "reason"].iloc[0])
+    st.success("Recommendations ready.")
+except Exception:
+    st.warning("Model weighting failed; using the deterministic recommendations instead.")
+    st.code(traceback.format_exc())
+
+# Map page recommendation back onto keyword rows.
+agg["page_recommendation"] = agg["page_id"].map(dict(zip(pages_df["page_id"], pages_df["recommendation"])))
+agg["page_reason"] = agg["page_id"].map(dict(zip(pages_df["page_id"], pages_df["reason"])))
+
+# ----------------------------- Step 9: Headline + which warrant a page -----------------------------
+st.subheader("9. Which clusters warrant their own page")
+standalone = pages_df[pages_df["recommendation"].str.startswith("Standalone")].copy()
+n_standalone = len(standalone)
+n_section = int((pages_df["recommendation"] == "Section").sum())
+n_merge = int((pages_df["recommendation"] == "Merge").sum())
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Candidate pages", len(pages_df))
+m2.metric("Warrant a page", n_standalone)
+m3.metric("Fold in as section", n_section)
+m4.metric("Merge (duplicate)", n_merge)
+
+show_cols = ["page_label", "pillar_label", "intent", "n_keywords", "total_volume", "n_sources", "reason"]
+st.markdown("**Pages that warrant their own URL**")
+st.dataframe(
+    standalone.sort_values("total_volume", ascending=False, na_position="last")[["page_label", "pillar_label", "intent", "n_keywords", "total_volume", "head_term"]],
+    use_container_width=True, height=320,
+)
+
+with st.expander("Full page table (all recommendations)"):
+    st.dataframe(
+        pages_df.sort_values(["pillar_label", "recommendation", "total_volume"],
+                             ascending=[True, True, False], na_position="last")[
+            ["page_label", "pillar_label", "recommendation", "intent", "n_keywords", "total_volume", "n_sources", "reason", "head_term"]
+        ],
+        use_container_width=True, height=420,
+    )
+
+# ----------------------------- Step 10: Visualise -----------------------------
+st.subheader("10. Visualise")
+try:
+    coords = PCA(n_components=2).fit_transform(embeddings)
+    agg["x"], agg["y"] = coords[:, 0], coords[:, 1]
+    colour_by = st.radio("Colour points by", ["Pillar", "Intent", "Recommendation"], horizontal=True)
+    colour_col = {"Pillar": "pillar_label", "Intent": "intent", "Recommendation": "page_recommendation"}[colour_by]
     fig = px.scatter(
-        df, x="x", y="y",
-        color="parent_label",
-        hover_data=["parent_label", "descriptive_name", "cluster", "keyword", "search volume"],
-        title="Parent Topical Clusters (HDBSCAN selection: EOM)",
-        width=1100, height=720
+        agg, x="x", y="y", color=colour_col,
+        hover_data=["keyword", "page_label", "pillar_label", "intent", "volume", "source"],
+        title=f"Keywords coloured by {colour_by}", width=1100, height=700,
     )
     st.plotly_chart(fig, use_container_width=True)
 except Exception:
-    st.error("Error while rendering the PCA scatter plot.")
+    st.error("Error while rendering the scatter plot.")
     st.code(traceback.format_exc())
-    st.stop()
 
-# ----------------------------- Summaries -----------------------------
-st.subheader("9️⃣ Parent summary")
+# ----------------------------- Step 11: Export -----------------------------
+st.subheader("11. Export")
 try:
-    parent_summary = (
-        df[df["parent_id"] != -1]
-        .groupby(["parent_label"])
-        .agg(size=("descriptive_name", "size"))
-        .reset_index()
-        .sort_values("size", ascending=False)
+    cols = ["keyword", "volume", "position", "source", "intent",
+            "page_label", "page_recommendation", "pillar_label"]
+    rename = {
+        "keyword": "Keyword", "volume": "Volume", "position": "Position", "source": "Source",
+        "intent": "Intent", "page_label": "Page", "page_recommendation": "Page recommendation",
+        "pillar_label": "Pillar",
+    }
+    if pillar_levels == 2:
+        cols.append("superpillar_label")
+        rename["superpillar_label"] = "Super-pillar"
+    cols.append("page_reason")
+    rename["page_reason"] = "Why"
+
+    export_df = agg[cols].rename(columns=rename)
+    st.download_button(
+        "Download keyword-level mapping (CSV)",
+        export_df.to_csv(index=False).encode("utf-8"),
+        "keyword_page_mapping.csv", "text/csv",
     )
-    st.dataframe(parent_summary, use_container_width=True, height=300)
-except Exception:
-    st.error("Error while building the parent summary.")
-    st.code(traceback.format_exc())
 
-st.subheader("🔟 Child summary (per parent)")
-try:
-    child_summary = (
-        df[df["child_id"] != -1]
-        .groupby(["parent_label", "child_id", "child_label"])
-        .agg(size=("descriptive_name", "size"))
-        .reset_index()
-        .sort_values(["parent_label", "size"], ascending=[True, False])
+    page_export = pages_df.rename(columns={
+        "page_label": "Page", "pillar_label": "Pillar", "intent": "Intent",
+        "n_keywords": "Keywords", "total_volume": "Total volume", "n_sources": "Sources",
+        "recommendation": "Recommendation", "reason": "Why", "head_term": "Head term",
+    })[["Page", "Pillar", "Recommendation", "Intent", "Keywords", "Total volume", "Sources", "Head term", "Why"]]
+    st.download_button(
+        "Download page-level summary (CSV)",
+        page_export.to_csv(index=False).encode("utf-8"),
+        "page_summary.csv", "text/csv",
     )
-    st.dataframe(child_summary, use_container_width=True, height=420)
+    st.success("Done. Keyword-level mapping and page-level summary are ready to download.")
 except Exception:
-    st.error("Error while building the child summary.")
+    st.error("Error while preparing the export.")
     st.code(traceback.format_exc())
-
-# ----------------------------- Export -----------------------------
-st.subheader("1️⃣1️⃣ Export")
-try:
-    # Export excludes "Cluster (descriptive name)"
-    export_df = df[[
-        "parent_label", "child_label", "cluster", "keyword", "search volume"
-    ]].rename(columns={
-        "parent_label": "Parent Topic",
-        "child_label": "Child Topic"
-    })
-
-    csv = export_df.to_csv(index=False).encode("utf-8")
-    st.download_button("📥 Download Hierarchical Topics CSV", csv, "hierarchical_topics_simple.csv", "text/csv")
-    st.success("✅ Done! Export excludes 'Cluster (descriptive name)'. Noise groups are labelled 'Other'. Visualisation shows parent topics only.")
-except Exception:
-    st.error("Error while preparing the CSV export.")
-    st.code(traceback.format_exc())
-    st.stop()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
