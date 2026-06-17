@@ -1,0 +1,11 @@
+# Secrets: never commit API keys
+.streamlit/secrets.toml
+.env
+
+# Local lab output and caches
+cluster_lab_out/
+*.npy
+
+# Python
+__pycache__/
+*.pyc
