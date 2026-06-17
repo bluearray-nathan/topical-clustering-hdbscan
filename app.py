@@ -51,9 +51,12 @@ if "label_cache" not in st.session_state:
     st.session_state.label_cache = {}
 
 # DataForSEO credentials (optional, Basic auth). Used for SERP-based intent.
+# Tolerant of common key names in case the secrets file labels them differently.
 try:
     _dfs = st.secrets["dataforseo"]
-    DFS_AUTH = base64.b64encode(f"{_dfs['login']}:{_dfs['password']}".encode()).decode()
+    _login = _dfs.get("login") or _dfs.get("username") or _dfs.get("email")
+    _pw = _dfs.get("password") or _dfs.get("api_password") or _dfs.get("api_key")
+    DFS_AUTH = base64.b64encode(f"{_login}:{_pw}".encode()).decode() if (_login and _pw) else None
 except Exception:
     DFS_AUTH = None
 
@@ -204,7 +207,7 @@ with st.sidebar:
     use_serp = intent_source.startswith("DataForSEO")
     dfs_standard = st.radio(
         "DataForSEO mode",
-        ["Standard queue (cheapest, slower)", "Live (instant, pricier)"],
+        ["Live (instant)", "Standard queue (cheapest, but slow)"],
         index=0,
     ).startswith("Standard")
     serp_cap = st.number_input("Max SERP lookups (0 = no limit)", min_value=0, value=2000, step=100)
