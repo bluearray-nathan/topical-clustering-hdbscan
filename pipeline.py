@@ -31,7 +31,7 @@ import sys
 import time
 import datetime as dt
 import concurrent.futures as cf
-from collections import Counter
+from collections import Counter, defaultdict
 
 import numpy as np
 import pandas as pd
@@ -46,6 +46,9 @@ INTENTS = ["Transactional", "Commercial", "Informational", "Navigational", "Loca
 PAGE_TYPES = ["Informational", "Commercial", "Transactional", "Local"]
 NAV_DOMINANCE = 0.4      # one domain holding this share of the top results => navigational
 MIXED_BELOW = 0.6        # if the top page type is below this share, the SERP is Mixed
+UBIQUITOUS_DF = 0.25     # domains ranking for this share of a pillar's keywords are dropped (non-discriminating)
+BLEND_ALPHA = 0.65       # weight on semantic vs specific-SERP overlap when forming pages
+PAGE_THRESHOLD = 0.50    # agglomerative distance threshold for the page blend
 DFS_BASE = "https://api.dataforseo.com/v3/serp/google/organic"
 
 client = OpenAI()
@@ -248,6 +251,45 @@ def decide_intent(kw, kw_to_results, counts):
     return dom if n / sum(c.values()) >= MIXED_BELOW else "Mixed"
 
 
+def _norm_url(u):
+    if not u:
+        return ""
+    u = u.lower().split("?")[0].split("#")[0]
+    u = re.sub(r"^https?://", "", u)
+    u = re.sub(r"^www\.", "", u)
+    return u.rstrip("/")
+
+
+def cluster_pages_in_pillar(idx, X, keywords, kw_to_results):
+    """Within one pillar, split keywords into pages by blending semantic similarity with
+    specific-page SERP overlap (ubiquitous domains dropped). Returns local cluster labels."""
+    n = len(idx)
+    if n == 1:
+        return np.array([0])
+    sub_kw = [keywords[i] for i in idx]
+    urlsets, dom_kw = {}, defaultdict(set)
+    for k in sub_kw:
+        us = {_norm_url(r.get("url")) for r in (kw_to_results.get(k) or []) if r.get("url")}
+        urlsets[k] = us
+        for u in us:
+            dom_kw[u.split("/")[0]].add(k)
+    ubiq = {d for d, ks in dom_kw.items() if len(ks) / n >= UBIQUITOUS_DF}
+    filt = {k: {u for u in urlsets[k] if u.split("/")[0] not in ubiq} for k in sub_kw}
+    sub = X[idx]
+    Ssem = np.clip(sub @ sub.T, 0.0, 1.0)
+    D = np.ones((n, n))
+    for a in range(n):
+        D[a, a] = 0.0
+        for b in range(a + 1, n):
+            A, B = filt[sub_kw[a]], filt[sub_kw[b]]
+            jac = len(A & B) / len(A | B) if (A or B) else 0.0
+            sim = BLEND_ALPHA * float(Ssem[a, b]) + (1 - BLEND_ALPHA) * jac
+            D[a, b] = D[b, a] = 1.0 - sim
+    D = np.clip(D, 0.0, 1.0)
+    return AgglomerativeClustering(metric="precomputed", linkage="average",
+                                   distance_threshold=PAGE_THRESHOLD, n_clusters=None).fit_predict(D)
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
@@ -294,35 +336,64 @@ def main():
     log(f"intent set: {int((df.intent_source == 'serp').sum())} from SERP, "
         f"{int((df.intent_source == 'text').sum())} text fallback; {timed_out} tasks timed out")
 
-    df["page"] = df["topic"] + " (" + df["intent"] + ")"
+    # ---- Pages: blend semantic + specific-SERP overlap within each pillar ----
+    keywords = df["keyword"].tolist()
+    page_ids = np.full(len(df), -1, dtype=int)
+    next_id = 0
+    for pid in sorted(df["topic_id"].unique()):
+        idx = np.where(df["topic_id"].values == pid)[0]
+        local = cluster_pages_in_pillar(idx, X, keywords, kw_to_results)
+        remap = {}
+        for j, lab in zip(idx, local):
+            lab = int(lab)
+            if lab not in remap:
+                remap[lab] = next_id
+                next_id += 1
+            page_ids[j] = remap[lab]
+    df["page_id"] = page_ids
+    log(f"formed {df.page_id.nunique()} pages across {df.topic_id.nunique()} pillars")
 
-    # Outputs
-    df.to_csv(os.path.join(args.outdir, "keyword_mapping.csv"), index=False)
-    pages = (df.groupby(["topic", "intent"])
-             .agg(keywords=("keyword", "size"), volume=("volume", "sum"),
-                  head_term=("keyword", "first"))
-             .reset_index().sort_values("volume", ascending=False, na_position="last"))
+    # Page-level intent (dominant member intent, else Mixed); head term names the page
+    p_intent, p_head = {}, {}
+    for pgid, grp in df.groupby("page_id"):
+        ic = grp["intent"].value_counts()
+        p_intent[pgid] = ic.index[0] if ic.iloc[0] / len(grp) >= MIXED_BELOW else "Mixed"
+        p_head[pgid] = grp.sort_values("volume", ascending=False, na_position="last")["keyword"].iloc[0]
+    df["page_intent"] = df["page_id"].map(p_intent)
+    df["page"] = df["page_id"].map(p_head)
+
+    # ---- Outputs ----
+    df[["keyword", "volume", "topic", "page", "page_intent", "intent", "intent_source"]].rename(
+        columns={"keyword": "Keyword", "volume": "Volume", "topic": "Pillar", "page": "Page",
+                 "page_intent": "Page intent", "intent": "Keyword intent", "intent_source": "Intent source"}
+    ).to_csv(os.path.join(args.outdir, "keyword_mapping.csv"), index=False)
+
+    pages = (df.groupby("page_id").agg(
+                Pillar=("topic", "first"), Page=("page", "first"), Intent=("page_intent", "first"),
+                Keywords=("keyword", "size"), Volume=("volume", "sum"))
+             .reset_index(drop=True).sort_values("Volume", ascending=False, na_position="last"))
     pages.to_csv(os.path.join(args.outdir, "page_summary.csv"), index=False)
 
     meta = {
         "run_id": args.run_id,
         "finished_at": dt.datetime.utcnow().isoformat() + "Z",
         "n_keywords": int(len(df)),
-        "n_topics": int(df.topic_id.nunique()),
-        "n_pages": int(df.groupby(["topic_id", "intent"]).ngroups),
+        "n_pillars": int(df.topic_id.nunique()),
+        "n_pages": int(df.page_id.nunique()),
         "intent_from_serp": int((df.intent_source == "serp").sum()),
         "intent_from_text": int((df.intent_source == "text").sum()),
         "serp_cost_usd": round(cost, 4),
         "timed_out": int(timed_out),
-        "intent_distribution": {k: int(v) for k, v in df.intent.value_counts().items()},
+        "page_intent_distribution": {k: int(v) for k, v in
+                                     df.drop_duplicates("page_id")["page_intent"].value_counts().items()},
     }
-    result = {"meta": meta, "keywords": df[["keyword", "volume", "topic", "intent",
-                                            "intent_source", "page"]].to_dict(orient="records")}
+    result = {"meta": meta, "keywords": df[["keyword", "volume", "topic", "page", "page_intent",
+              "intent_source"]].rename(columns={"topic": "pillar"}).to_dict(orient="records")}
     with open(os.path.join(args.outdir, "result.json"), "w") as f:
         json.dump(result, f)
     with open(os.path.join(args.outdir, "status.json"), "w") as f:
         json.dump({"status": "done", **meta}, f)
-    log(f"done: {meta['n_topics']} topics, {meta['n_pages']} pages, "
+    log(f"done: {meta['n_pillars']} pillars, {meta['n_pages']} pages, "
         f"{meta['intent_from_serp']} intents from SERP, ${meta['serp_cost_usd']} SERP cost")
 
 

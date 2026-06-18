@@ -102,3 +102,27 @@ Together these turn the tool from a keyword-to-page map into a category-and-arch
 keywords, then page map, then a recommended IA, with each pillar enriched by its entities and the
 facets the category cares about (validated against the model's view and customer reviews, and compared
 to the brand's own coverage to expose the gaps).
+
+## Competitor IA as a page-clustering signal
+
+Source: Nathan, 2026-06-18. To try after the semantic + SERP blend is locked.
+
+Let the user name competitor domains and use a strong, well-structured competitor's own page
+structure to guide our page boundaries. If a respected editorial competitor (for example the AA) ranks
+separate pages for sub-topics within a topic, that is evidence those sub-topics should be separate
+pages; if they cover several on one URL, that is evidence to keep them together. Follow a site that has
+already won.
+
+It plugs in cheaply because we already pull the top 10 URLs per keyword, so we already know which of a
+competitor's URLs rank for which keywords, which is their keyword-to-page mapping. Keywords the
+competitor serves with the same URL belong together; keywords served by different URLs split. It
+becomes a third signal in the page-clustering blend (semantic + general SERP overlap + competitor
+co-occurrence), and a cleaner one, because a good editorial competitor has distinct, intentional pages
+rather than the ubiquitous aggregator hubs that muddied generic overlap.
+
+Honest caveats:
+- Only gives a signal for keywords the chosen competitor ranks for; fall back to the blend elsewhere.
+- The user must pick strong editorial competitors (category leaders), not aggregators, or it adds noise.
+- It is a prior, not gospel: their IA can be imperfect, and sometimes you will want to out-structure
+  them to win, so it should be a weighted signal rather than an override.
+- Multiple competitors may disagree; aggregate or let the user set a primary.
