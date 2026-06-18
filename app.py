@@ -1,480 +1,313 @@
-# app.py: Keyword Topic Clustering (lean core)
+# app.py: Keyword to Page Mapping (front-end / orchestrator)
 # ---------------------------------------------------------------------------
-# Groups a keyword list into topic clusters by meaning, using
-# text-embedding-3-large and agglomerative clustering on cosine distance.
+# Thin Streamlit UI. The heavy engine (pipeline.py) runs in a GitHub Action so a
+# run survives the browser closing and has no practical timeout. This app:
+#   1. uploads the keyword CSV to the data branch,
+#   2. triggers the Action,
+#   3. polls for the result,
+#   4. renders the Topic > Pillar > Page map.
 #
-# This is the validated foundation. It captures TOPIC, not intent, so a topic
-# such as "comprehensive insurance" will hold both informational and commercial
-# keywords. Splitting each topic into separate PAGES by intent is the next layer,
-# which sits on top of this.
+# It holds only a GitHub token (in Streamlit secrets). The OpenAI and DataForSEO
+# credentials live in GitHub Actions secrets, so they never touch the front-end.
 
-import time
+import io
 import json
+import time
 import base64
-import hashlib
-import threading
-import concurrent.futures as cf
+import datetime as dt
 
-import numpy as np
 import pandas as pd
-import streamlit as st
-import openai
 import requests
-from sklearn.preprocessing import normalize
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.decomposition import PCA
-import plotly.express as px
+import streamlit as st
 
-st.set_page_config(page_title="Keyword Clustering and Page Mapping", layout="wide")
-st.title("Keyword Clustering and Page Mapping")
+st.set_page_config(page_title="Keyword to Page Mapping", layout="wide")
+st.title("Keyword to Page Mapping")
+
+# --------------------------- config from secrets --------------------------- #
+try:
+    gh = st.secrets["github"]
+    TOKEN = gh["token"]
+    REPO = gh["repo"]                              # "owner/name"
+    CODE_BRANCH = gh.get("code_branch", "main")    # where the workflow lives
+    DATA_BRANCH = gh.get("data_branch", "runs")    # where inputs/results live
+    WORKFLOW = gh.get("workflow", "run.yml")
+except Exception:
+    st.error(
+        "Missing GitHub config. Add this to the app's Streamlit secrets:\n\n"
+        '[github]\n'
+        'token = "ghp_..."\n'
+        'repo = "bluearray-nathan/topical-clustering-hdbscan"\n'
+        'code_branch = "main"\n'
+        'data_branch = "runs"\n'
+        'workflow = "run.yml"'
+    )
+    st.stop()
+
+API = "https://api.github.com"
+HDRS = {
+    "Authorization": f"Bearer {TOKEN}",
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+}
+POLL_SECONDS = 6
+
+
+# ------------------------------- GitHub API -------------------------------- #
+def gh_get_file(path, ref):
+    """Return the file's bytes, or None if it does not exist yet."""
+    r = requests.get(f"{API}/repos/{REPO}/contents/{path}",
+                     headers=HDRS, params={"ref": ref}, timeout=30)
+    if r.status_code == 200:
+        return base64.b64decode(r.json()["content"])
+    return None
+
+
+def gh_ensure_branch(branch, base):
+    """Make sure the data branch exists, creating it from base if needed."""
+    r = requests.get(f"{API}/repos/{REPO}/git/ref/heads/{branch}", headers=HDRS, timeout=30)
+    if r.status_code == 200:
+        return True
+    b = requests.get(f"{API}/repos/{REPO}/git/ref/heads/{base}", headers=HDRS, timeout=30)
+    if b.status_code != 200:
+        return False
+    sha = b.json()["object"]["sha"]
+    c = requests.post(f"{API}/repos/{REPO}/git/refs", headers=HDRS,
+                      json={"ref": f"refs/heads/{branch}", "sha": sha}, timeout=30)
+    return c.status_code in (200, 201)
+
+
+def gh_put_file(path, content_bytes, branch, message):
+    """Create or update a file on the given branch."""
+    cur = requests.get(f"{API}/repos/{REPO}/contents/{path}",
+                       headers=HDRS, params={"ref": branch}, timeout=30)
+    sha = cur.json().get("sha") if cur.status_code == 200 else None
+    body = {"message": message,
+            "content": base64.b64encode(content_bytes).decode(),
+            "branch": branch}
+    if sha:
+        body["sha"] = sha
+    r = requests.put(f"{API}/repos/{REPO}/contents/{path}", headers=HDRS, json=body, timeout=30)
+    return r.status_code in (200, 201), r
+
+
+def gh_dispatch(run_id, location, pillar_threshold):
+    body = {"ref": CODE_BRANCH,
+            "inputs": {"run_id": run_id, "location": location,
+                       "pillar_threshold": str(pillar_threshold), "data_branch": DATA_BRANCH}}
+    r = requests.post(f"{API}/repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches",
+                      headers=HDRS, json=body, timeout=30)
+    return r.status_code == 204, r
+
+
+def latest_run_url():
+    try:
+        r = requests.get(f"{API}/repos/{REPO}/actions/workflows/{WORKFLOW}/runs",
+                         headers=HDRS, params={"per_page": 1}, timeout=30)
+        runs = r.json().get("workflow_runs", [])
+        return runs[0]["html_url"] if runs else None
+    except Exception:
+        return None
+
+
+def list_runs():
+    """Return run ids present on the data branch, newest first."""
+    r = requests.get(f"{API}/repos/{REPO}/contents/runs",
+                     headers=HDRS, params={"ref": DATA_BRANCH}, timeout=30)
+    if r.status_code != 200:
+        return []
+    ids = [x["name"] for x in r.json() if x.get("type") == "dir"]
+    return sorted(ids, reverse=True)
+
+
+# --------------------------------- helpers --------------------------------- #
+def vol(x):
+    try:
+        v = float(x)
+        return f"{int(v):,}" if pd.notna(v) else "—"
+    except Exception:
+        return "—"
+
+
+def read_csv_bytes(b):
+    if not b:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(io.BytesIO(b))
+    except Exception:
+        return pd.DataFrame()
+
+
+# --------------------------------- render ---------------------------------- #
+def render_results(run_id):
+    pj = gh_get_file(f"runs/{run_id}/result.json", DATA_BRANCH)
+    ps_bytes = gh_get_file(f"runs/{run_id}/page_summary.csv", DATA_BRANCH)
+    km_bytes = gh_get_file(f"runs/{run_id}/keyword_mapping.csv", DATA_BRANCH)
+    meta = (json.loads(pj).get("meta", {}) if pj else {})
+    page_summary = read_csv_bytes(ps_bytes)
+    keyword_mapping = read_csv_bytes(km_bytes)
+
+    st.subheader("Results")
+    c = st.columns(5)
+    c[0].metric("Topics", meta.get("n_topics", "—"))
+    c[1].metric("Pillars", meta.get("n_pillars", "—"))
+    c[2].metric("Pages", meta.get("n_pages", "—"))
+    c[3].metric("Keywords", meta.get("n_keywords", "—"))
+    c[4].metric("SERP cost", f"${meta.get('serp_cost_usd', 0)}")
+
+    bits = []
+    if meta.get("intent_from_serp") is not None:
+        bits.append(f"{meta['intent_from_serp']} intents from the SERP, "
+                    f"{meta.get('intent_from_text', 0)} from text")
+    if meta.get("page_intent_distribution"):
+        dist = ", ".join(f"{k}: {v}" for k, v in meta["page_intent_distribution"].items())
+        bits.append(f"page intent split, {dist}")
+    if meta.get("timed_out"):
+        bits.append(f"{meta['timed_out']} SERP lookups timed out")
+    if bits:
+        st.caption(". ".join(bits) + ".")
+
+    if page_summary.empty:
+        st.warning("No page summary found for this run.")
+        return
+
+    st.markdown("### Topic > Pillar > Page")
+    for topic, tg in sorted(page_summary.groupby("Topic"),
+                            key=lambda kv: -kv[1]["Volume"].sum(min_count=1)
+                            if kv[1]["Volume"].notna().any() else 0):
+        head = (f"{topic}  ·  {tg['Pillar'].nunique()} pillars · "
+                f"{len(tg)} pages · {vol(tg['Volume'].sum(min_count=1))} vol")
+        with st.expander(head):
+            for pillar, pg in sorted(tg.groupby("Pillar"),
+                                     key=lambda kv: -kv[1]["Volume"].sum(min_count=1)
+                                     if kv[1]["Volume"].notna().any() else 0):
+                st.markdown(f"**{pillar}**  ·  {len(pg)} pages · {vol(pg['Volume'].sum(min_count=1))} vol")
+                show = pg[["Page", "Intent", "Keywords", "Volume"]].sort_values(
+                    "Volume", ascending=False, na_position="last")
+                st.dataframe(show, hide_index=True, use_container_width=True)
+
+    with st.expander("Full keyword mapping"):
+        st.dataframe(keyword_mapping, hide_index=True, use_container_width=True, height=400)
+
+    st.markdown("### Download")
+    d1, d2 = st.columns(2)
+    if km_bytes:
+        d1.download_button("Keyword mapping (CSV)", km_bytes,
+                           f"keyword_mapping_{run_id}.csv", "text/csv")
+    if ps_bytes:
+        d2.download_button("Page summary (CSV)", ps_bytes,
+                           f"page_summary_{run_id}.csv", "text/csv")
+
+
+# --------------------------------- sidebar --------------------------------- #
+with st.sidebar:
+    st.header("Run settings")
+    location = st.text_input("SERP location", value="United Kingdom").strip() or "United Kingdom"
+    with st.expander("Advanced"):
+        pillar_threshold = st.slider(
+            "Pillar tightness (cosine distance)",
+            min_value=0.35, max_value=0.55, value=0.45, step=0.01,
+            help="Lower = tighter, more pillars. 0.45 is the validated default.")
+    st.divider()
+    st.caption(f"Engine: GitHub Actions on `{REPO}`")
+    runs = list_runs()
+    if runs:
+        st.caption("Load a previous run")
+        pick = st.selectbox("Previous runs", ["—"] + runs, label_visibility="collapsed")
+        if pick != "—" and st.button("Load", use_container_width=True):
+            st.session_state.run_id = pick
+            st.session_state.running = False
+            st.session_state.loaded = True
+            st.rerun()
 
 with st.expander("What this does"):
-    st.markdown("""
-Groups a keyword list into **topic clusters** by meaning, then splits each topic into **pages by
-intent**. Topic = pillar, page = topic plus intent. Every keyword gets a home; there is no "noise" bucket.
-
-Clustering uses text-embedding-3-large with agglomerative clustering on cosine distance. Intent is
-currently read from the **keyword text**; SERP-grounded intent is the planned next upgrade.
-""")
-
-# ----------------------------- API key -----------------------------
-try:
-    openai.api_key = st.secrets["openai"]["api_key"]
-except Exception:
-    st.error('Missing OpenAI API key. Add it in Streamlit secrets:\n\n[openai]\napi_key = "sk-..."')
-    st.stop()
-
-EMBED_MODEL = "text-embedding-3-large"
-LABEL_MODEL = "gpt-4o-mini-2024-07-18"
-
-if "label_cache" not in st.session_state:
-    st.session_state.label_cache = {}
-
-# DataForSEO credentials (optional, Basic auth). Used for SERP-based intent.
-# Tolerant of common key names in case the secrets file labels them differently.
-try:
-    _dfs = st.secrets["dataforseo"]
-    _login = _dfs.get("login") or _dfs.get("username") or _dfs.get("email")
-    _pw = _dfs.get("password") or _dfs.get("api_password") or _dfs.get("api_key")
-    DFS_AUTH = base64.b64encode(f"{_login}:{_pw}".encode()).decode() if (_login and _pw) else None
-except Exception:
-    DFS_AUTH = None
-
-DFS_BASE = "https://api.dataforseo.com/v3/serp/google/organic"
-
-
-def _intent_from_item_types(types):
-    """Map a DataForSEO result's item_types to an intent, or None to keep the text label."""
-    t = {str(x).lower() for x in (types or [])}
-    if t & {"local_pack", "map", "local_services", "hotels_pack", "google_hotels"}:
-        return "Local"
-    if t & {"shopping", "popular_products", "google_flights"}:
-        return "Transactional"
-    info = bool(t & {"featured_snippet", "people_also_ask", "answer_box", "knowledge_graph",
-                     "questions_and_answers", "discussions_and_forums"})
-    ads = bool(t & {"paid", "commercial_units"})
-    if ads and not info:
-        return "Transactional"
-    if ads:
-        return "Commercial"
-    if info:
-        return "Informational"
-    return None
-
-
-def dfs_live(keywords, location, auth, progress_cb=None):
-    """Live Advanced. DataForSEO Live accepts only ONE task per request, so we send one keyword
-    per call and parallelise across a thread pool. Returns (intent_map, info)."""
-    headers = {"Authorization": "Basic " + auth, "Content-Type": "application/json"}
-    out, cost, failed, done = {}, 0.0, 0, 0
-
-    def fetch(kw):
-        payload = [{"keyword": kw, "location_name": location, "language_code": "en", "device": "desktop"}]
-        for _ in range(2):                       # one light retry on a transient error
-            try:
-                r = requests.post(DFS_BASE + "/live/advanced", headers=headers, json=payload, timeout=60)
-                r.raise_for_status()
-                j = r.json()
-            except Exception:
-                continue
-            task = (j.get("tasks") or [{}])[0]
-            if (task.get("status_code") or 0) >= 40000:
-                return kw, None, float(j.get("cost") or 0.0), 1
-            types = []
-            for rr in (task.get("result") or []):
-                types = rr.get("item_types") or []
-                break
-            return kw, _intent_from_item_types(types), float(j.get("cost") or 0.0), 0
-        return kw, None, 0.0, 1
-
-    with cf.ThreadPoolExecutor(max_workers=12) as ex:
-        futs = [ex.submit(fetch, kw) for kw in keywords]
-        for fut in cf.as_completed(futs):
-            kw, it, c, f = fut.result()
-            out[kw] = it
-            cost += c
-            failed += f
-            done += 1
-            if progress_cb:
-                progress_cb(done, len(keywords))
-    info = {"submitted": len(keywords), "resolved": sum(1 for v in out.values() if v),
-            "failed": failed, "cost": cost}
-    return out, info
-
-
-def dfs_post(keywords, location, auth):
-    """Submit queued Standard tasks (priority 1, the cheapest queue). Returns (id_to_kw, cost)."""
-    headers = {"Authorization": "Basic " + auth, "Content-Type": "application/json"}
-    id_to_kw, cost = {}, 0.0
-    for i in range(0, len(keywords), 100):
-        chunk = keywords[i:i + 100]
-        payload = [{"keyword": k, "location_name": location, "language_code": "en",
-                    "device": "desktop", "priority": 1} for k in chunk]
-        try:
-            r = requests.post(DFS_BASE + "/task_post", headers=headers, json=payload, timeout=60)
-            r.raise_for_status()
-            j = r.json()
-        except Exception:
-            j = {}
-        cost += float(j.get("cost") or 0.0)
-        for k, task in zip(chunk, j.get("tasks") or []):
-            if task.get("id"):
-                id_to_kw[task["id"]] = k
-    return id_to_kw, cost
-
-
-def dfs_collect(id_to_kw, auth, progress_cb=None, timeout_s=1200, poll_s=8):
-    """Poll tasks_ready and fetch advanced results. Returns (intent_map, timed_out_count)."""
-    headers = {"Authorization": "Basic " + auth}
-    pending, out = dict(id_to_kw), {}
-    deadline = time.time() + timeout_s
-    while pending and time.time() < deadline:
-        ready = []
-        try:
-            r = requests.get(DFS_BASE + "/tasks_ready", headers=headers, timeout=60)
-            r.raise_for_status()
-            for task in (r.json().get("tasks") or []):
-                for res in (task.get("result") or []):
-                    if res.get("id") in pending:
-                        ready.append(res["id"])
-        except Exception:
-            ready = []
-        for rid in ready:
-            types = []
-            try:
-                rr = requests.get(f"{DFS_BASE}/task_get/advanced/{rid}", headers=headers, timeout=60)
-                rr.raise_for_status()
-                for t in (rr.json().get("tasks") or []):
-                    for res in (t.get("result") or []):
-                        types = res.get("item_types") or []
-                        break
-                out[pending[rid]] = _intent_from_item_types(types)
-            except Exception:
-                out[pending[rid]] = None
-            pending.pop(rid, None)
-            if progress_cb:
-                progress_cb(len(out), len(id_to_kw))
-        if pending:
-            time.sleep(poll_s)
-    for rid, kw in pending.items():
-        out.setdefault(kw, None)
-    return out, len(pending)
-
-
-# ----------------------------- Sidebar -----------------------------
-with st.sidebar:
-    st.header("Setup")
-    st.caption("Embedding model")
-    st.code(EMBED_MODEL, language="text")
-
-    st.header("Cluster tightness")
-    threshold = st.slider(
-        "Cosine distance threshold",
-        min_value=0.10, max_value=0.45, value=0.25, step=0.01,
-        help="Lower = tighter, more granular topics. Higher = broader, fewer topics. "
-             "0.25 is the validated default.",
+    st.markdown(
+        "Maps a keyword list to a **Topic > Pillar > Page** structure. Pillars are semantic "
+        "themes, pages blend meaning with SERP overlap, and topics are broad editorial sections. "
+        "Each page carries an intent read from its ranking SERPs.\n\n"
+        "The engine runs on GitHub Actions, so you can close this tab while it works. "
+        "The first run on a fresh keyword set fetches SERPs (a few minutes); after that the "
+        "SERPs are cached, so re-runs are quick and cost only a little OpenAI."
     )
 
-    st.header("Intent")
-    intent_source = st.radio(
-        "Intent source",
-        ["Text (fast, free)", "DataForSEO SERP (reads the live SERP, costs credits)"],
-        index=1,
-        help="Text reads intent from the keyword wording. DataForSEO reads each keyword's live SERP "
-             "features, which is closer to how Google treats it. Text is the fallback either way.",
-    )
-    use_serp = intent_source.startswith("DataForSEO")
-    dfs_standard = st.radio(
-        "DataForSEO mode",
-        ["Live (instant)", "Standard queue (cheapest, but slow)"],
-        index=0,
-    ).startswith("Standard")
-    serp_cap = st.number_input("Max SERP lookups (0 = no limit)", min_value=0, value=2000, step=100)
-    serp_location = st.text_input("SERP location", value="United Kingdom").strip() or "United Kingdom"
-
-# ----------------------------- 1. Upload -----------------------------
+# ------------------------------- upload + run ------------------------------ #
 st.subheader("1. Upload your keyword list")
 file = st.file_uploader("CSV with a keyword column (volume optional).", type=["csv"])
-if not file:
-    st.info("Upload a CSV to begin.")
-    st.stop()
 
-df_in = pd.read_csv(file)
-df_in.columns = [str(c).strip() for c in df_in.columns]
-
-
-def find_col(cols, cands):
-    low = {c.lower(): c for c in cols}
-    for c in cands:
-        if c in low:
-            return low[c]
-    return None
-
-
-kcol = find_col(df_in.columns, ["keyword", "keywords", "query", "term"])
-if not kcol:
-    st.error(f"No keyword column found. Columns seen: {list(df_in.columns)}")
-    st.stop()
-vcol = find_col(df_in.columns, ["search volume", "search_volume", "volume", "vol", "searches"])
-
-df = pd.DataFrame()
-df["keyword"] = df_in[kcol].astype(str).str.strip()
-df["volume"] = pd.to_numeric(df_in[vcol], errors="coerce") if vcol else np.nan
-df = df[df["keyword"].str.len() > 0].drop_duplicates("keyword").reset_index(drop=True)
-
-if len(df) < 5:
-    st.error("Need at least 5 distinct keywords to cluster.")
-    st.stop()
-st.success(f"Loaded {len(df)} distinct keywords"
-           f"{' with volume.' if vcol else '. No volume column found, that is fine.'}")
-
-# ----------------------------- 2. Embed -----------------------------
-st.subheader("2. Embed")
-
-
-@st.cache_data(show_spinner=False)
-def embed(keywords, model):
-    vecs = []
-    for i in range(0, len(keywords), 200):
-        resp = openai.embeddings.create(model=model, input=keywords[i:i + 200])
-        vecs.extend([d.embedding for d in sorted(resp.data, key=lambda d: d.index)])
-        time.sleep(0.05)
-    return normalize(np.array(vecs, dtype=np.float32))
-
-
-try:
-    with st.spinner(f"Embedding {len(df)} keywords with {EMBED_MODEL}..."):
-        X = embed(df["keyword"].tolist(), EMBED_MODEL)
-    st.success(f"Embedded {len(X)} keywords.")
-except Exception as e:
-    st.error(f"Embedding failed: {e}")
-    st.stop()
-
-# ----------------------------- 3. Cluster -----------------------------
-st.subheader("3. Cluster into topics")
-labels = AgglomerativeClustering(
-    n_clusters=None, distance_threshold=float(threshold),
-    metric="cosine", linkage="average",
-).fit_predict(X)
-df["topic_id"] = labels
-n_topics = int(df["topic_id"].nunique())
-n_singletons = int((df["topic_id"].value_counts() == 1).sum())
-st.success(f"{n_topics} topics. {n_singletons} are single keywords "
-           f"({100 * n_singletons / len(df):.0f}%). Adjust the tightness slider to taste.")
-
-# ----------------------------- 4. Label -----------------------------
-st.subheader("4. Label topics")
-
-
-def label_topic(keywords, cache, lock):
-    # cache is a plain dict handed in from the main thread; never touch
-    # st.session_state from a worker thread.
-    key = hashlib.md5("|".join(sorted(keywords)).encode()).hexdigest()
-    with lock:
-        if key in cache:
-            return cache[key]
-    sample = keywords[:25]
-    prompt = ("These keywords belong to one topic:\n" + ", ".join(sample) +
-              "\n\nGive a concise topic name in 1 to 4 words (noun phrase, minimal punctuation). "
-              "Reply with only the name.")
+if file is not None:
     try:
-        resp = openai.chat.completions.create(
-            model=LABEL_MODEL, temperature=0.2,
-            messages=[{"role": "system", "content": "You are an SEO content analyst. Reply with only the label."},
-                      {"role": "user", "content": prompt}],
-        )
-        name = " ".join(resp.choices[0].message.content.strip().strip('"').strip("'").split()[:5]) or "Unlabelled"
-    except Exception:
-        name = sample[0] if sample else "Unlabelled"
-    with lock:
-        cache[key] = name
-    return name
-
-
-ids = sorted(df["topic_id"].unique())
-topic_kws = {
-    tid: df[df["topic_id"] == tid].sort_values("volume", ascending=False, na_position="last")["keyword"].tolist()
-    for tid in ids
-}
-labels_map = {}
-label_cache = st.session_state.label_cache   # grab the dict on the main thread
-label_lock = threading.Lock()
-prog = st.progress(0.0)
-done = 0
-with cf.ThreadPoolExecutor(max_workers=12) as ex:
-    futs = {ex.submit(label_topic, topic_kws[tid], label_cache, label_lock): tid for tid in ids}
-    for fut in cf.as_completed(futs):
-        labels_map[futs[fut]] = fut.result()
-        done += 1
-        prog.progress(done / len(ids))
-df["topic"] = df["topic_id"].map(labels_map)
-st.success("Topics labelled.")
-
-# ----------------------------- 5. Intent + pages -----------------------------
-st.subheader("5. Split topics into pages by intent")
-
-INTENTS = ["Transactional", "Commercial", "Informational", "Navigational", "Local"]
-
-
-@st.cache_data(show_spinner=False)
-def classify_intents(keywords, model):
-    """Classify each keyword's intent from its text. Cached, so it runs once per keyword set."""
-    out = {}
-    batch_size = 40
-    sys_msg = ("You are an SEO search-intent classifier. For each keyword choose exactly one intent "
-               "from: " + ", ".join(INTENTS) + ". "
-               'Reply only as JSON: {"results":[{"keyword":"...","intent":"..."}]}.')
-    for i in range(0, len(keywords), batch_size):
-        batch = keywords[i:i + batch_size]
-        user_msg = "Classify these keywords:\n" + "\n".join(f"- {k}" for k in batch)
-        try:
-            resp = openai.chat.completions.create(
-                model=model, temperature=0,
-                response_format={"type": "json_object"},
-                messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}],
-            )
-            for r in json.loads(resp.choices[0].message.content).get("results", []):
-                intent = str(r.get("intent", "")).strip()
-                out[str(r.get("keyword", "")).strip()] = intent if intent in INTENTS else "Informational"
-        except Exception:
-            for k in batch:
-                out[k] = "Informational"
-    for k in keywords:                       # guarantee every keyword is covered
-        out.setdefault(k, "Informational")
-    return out
-
-
-with st.spinner("Classifying intent from keyword text..."):
-    intent_map = classify_intents(df["keyword"].tolist(), LABEL_MODEL)
-df["intent"] = df["keyword"].map(intent_map).fillna("Informational")
-df["intent_source"] = "text"
-
-# Override with SERP-derived intent where selected and available.
-if use_serp:
-    if not DFS_AUTH:
-        st.warning("DataForSEO SERP selected, but no credentials in secrets "
-                   "([dataforseo] login / password). Keeping the text intent.")
-    else:
-        cand = df.sort_values("volume", ascending=False, na_position="last")
-        if serp_cap and int(serp_cap) > 0:
-            cand = cand.head(int(serp_cap))
-        cand_kws = cand["keyword"].tolist()
-        prog = st.progress(0.0)
-        status = st.empty()
-        if dfs_standard:
-            status.caption("Submitting queued tasks; the Standard queue usually clears in a few minutes.")
-            id_to_kw, cost = dfs_post(cand_kws, serp_location, DFS_AUTH)
-            if not id_to_kw:
-                st.warning("DataForSEO accepted no tasks. Check the location name and credentials. Keeping text intent.")
-                serp_map, info = {}, {"submitted": len(cand_kws), "resolved": 0, "cost": cost, "timed_out": 0}
-            else:
-                serp_map, timed_out = dfs_collect(
-                    id_to_kw, DFS_AUTH,
-                    progress_cb=lambda d, t: (prog.progress(min(d / t, 1.0)),
-                                              status.caption(f"Collected {d}/{t} SERPs from the queue")))
-                info = {"submitted": len(cand_kws), "resolved": sum(1 for v in serp_map.values() if v),
-                        "cost": cost, "timed_out": timed_out}
+        preview = pd.read_csv(file)
+        preview.columns = [str(c).strip() for c in preview.columns]
+        low = {c.lower(): c for c in preview.columns}
+        has_kw = any(c in low for c in ["keyword", "keywords", "query", "term"])
+        if not has_kw:
+            st.error(f"No keyword column found. Columns seen: {list(preview.columns)}")
         else:
-            serp_map, info = dfs_live(
-                cand_kws, serp_location, DFS_AUTH,
-                progress_cb=lambda d, t: (prog.progress(min(d / t, 1.0)),
-                                          status.caption(f"Read SERPs: chunk {d}/{t}")))
-        for kw, it in serp_map.items():
-            if it:
-                df.loc[df["keyword"] == kw, "intent"] = it
-                df.loc[df["keyword"] == kw, "intent_source"] = "serp"
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Intent from SERP", int((df["intent_source"] == "serp").sum()))
-        c2.metric("Intent from text", int((df["intent_source"] == "text").sum()))
-        c3.metric("SERP resolved", f"{info.get('resolved', 0)}/{info.get('submitted', 0)}")
-        c4.metric("DataForSEO cost", f"${info.get('cost', 0):.2f}")
-        if info.get("timed_out"):
-            st.caption(f"{info['timed_out']} tasks did not return before the timeout and kept their text intent.")
+            st.success(f"{len(preview)} rows ready.")
+            file.seek(0)
+            csv_bytes = file.read()
+            st.subheader("2. Run the mapping")
+            if st.button("Run mapping", type="primary"):
+                run_id = dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+                with st.spinner("Submitting the run..."):
+                    if not gh_ensure_branch(DATA_BRANCH, CODE_BRANCH):
+                        st.error(f"Could not find or create the `{DATA_BRANCH}` branch. "
+                                 "Check the token has repo access.")
+                        st.stop()
+                    ok, r = gh_put_file(f"runs/{run_id}/input.csv", csv_bytes, DATA_BRANCH,
+                                        f"run {run_id}: input")
+                    if not ok:
+                        st.error(f"Could not upload the keyword list (HTTP {r.status_code}). "
+                                 "Check the token scopes (repo).")
+                        st.stop()
+                    ok, r = gh_dispatch(run_id, location, pillar_threshold)
+                    if not ok:
+                        st.error(f"Could not trigger the workflow (HTTP {r.status_code}). "
+                                 "Check the workflow is on the default branch and the token "
+                                 "has the workflow scope.")
+                        st.stop()
+                st.session_state.run_id = run_id
+                st.session_state.start_ts = time.time()
+                st.session_state.running = True
+                st.session_state.loaded = False
+                st.rerun()
+    except Exception as e:
+        st.error(f"Could not read the CSV: {e}")
 
-df["page"] = df["topic"] + " (" + df["intent"] + ")"
-n_pages = df.groupby(["topic_id", "intent"]).ngroups
-dist = ", ".join(f"{k}: {v}" for k, v in df["intent"].value_counts().items())
-src = "SERP, with text as fallback" if (use_serp and DFS_AUTH) else "keyword text"
-st.success(f"{n_pages} pages across {n_topics} topics. Intent source: {src}.")
-st.caption(f"Intent distribution: {dist}.")
+# ------------------------------- poll / show ------------------------------- #
+if st.session_state.get("running"):
+    rid = st.session_state.run_id
+    raw = gh_get_file(f"runs/{rid}/status.json", DATA_BRANCH)
+    status = {}
+    if raw:
+        try:
+            status = json.loads(raw)
+        except Exception:
+            status = {}
+    s = status.get("status", "queued")
+    elapsed = int(time.time() - st.session_state.get("start_ts", time.time()))
 
-# ----------------------------- 6. Topics and pages -----------------------------
-st.subheader("6. Topics and pages")
+    st.divider()
+    if s == "done":
+        st.session_state.running = False
+        st.success(f"Done in about {elapsed}s.")
+        render_results(rid)
+    elif s == "error":
+        st.session_state.running = False
+        st.error(f"The run failed: {status.get('message', 'see the Actions log')}.")
+        url = latest_run_url()
+        if url:
+            st.markdown(f"[View the Actions log]({url})")
+    else:
+        msg = {"queued": "Queued, the Action is starting",
+               "running": "Running"}.get(s, s)
+        st.info(f"{msg}... {elapsed}s elapsed. You can safely close this tab and come back.")
+        url = latest_run_url()
+        if url:
+            st.caption(f"[Watch the live log on GitHub]({url})")
+        time.sleep(POLL_SECONDS)
+        st.rerun()
 
-topic_rows = []
-for tid in ids:
-    sub = df[df["topic_id"] == tid].sort_values("volume", ascending=False, na_position="last")
-    vol = sub["volume"].sum(min_count=1)
-    topic_rows.append({
-        "Topic": labels_map[tid],
-        "Pages": int(sub["intent"].nunique()),
-        "Keywords": len(sub),
-        "Volume": (int(vol) if pd.notna(vol) else None),
-        "Head term": sub["keyword"].iloc[0],
-    })
-topics_tbl = pd.DataFrame(topic_rows).sort_values("Volume", ascending=False, na_position="last")
-st.markdown("**Topics (pillars)**")
-st.dataframe(topics_tbl, use_container_width=True, height=280)
-
-page_rows = []
-for (tid, intent), sub in df.groupby(["topic_id", "intent"]):
-    sub = sub.sort_values("volume", ascending=False, na_position="last")
-    vol = sub["volume"].sum(min_count=1)
-    page_rows.append({
-        "Page": f"{labels_map[tid]} ({intent})",
-        "Topic": labels_map[tid],
-        "Intent": intent,
-        "Keywords": len(sub),
-        "Volume": (int(vol) if pd.notna(vol) else None),
-        "Head term": sub["keyword"].iloc[0],
-    })
-pages_tbl = pd.DataFrame(page_rows).sort_values("Volume", ascending=False, na_position="last")
-st.markdown("**Pages (each topic split by intent)**")
-st.dataframe(pages_tbl, use_container_width=True, height=420)
-
-# 2D map, colour by topic or intent
-try:
-    coords = PCA(n_components=2).fit_transform(X)
-    df["x"], df["y"] = coords[:, 0], coords[:, 1]
-    colour_by = st.radio("Colour the map by", ["Topic", "Intent"], horizontal=True)
-    fig = px.scatter(df, x="x", y="y", color=colour_by.lower(),
-                     hover_data=["keyword", "topic", "intent", "volume"], height=650,
-                     title=f"Keywords by {colour_by.lower()}")
-    if colour_by == "Topic":
-        fig.update_layout(showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
-except Exception:
-    pass
-
-# ----------------------------- 7. Export -----------------------------
-st.subheader("7. Export")
-kw_export = df[["keyword", "volume", "topic", "intent", "intent_source", "page"]].rename(
-    columns={"keyword": "Keyword", "volume": "Volume", "topic": "Topic", "intent": "Intent",
-             "intent_source": "Intent source", "page": "Page"})
-st.download_button("Download keyword mapping (CSV)",
-                   kw_export.to_csv(index=False).encode("utf-8"),
-                   "keyword_page_mapping.csv", "text/csv")
-st.download_button("Download page summary (CSV)",
-                   pages_tbl.to_csv(index=False).encode("utf-8"),
-                   "page_summary.csv", "text/csv")
-st.caption("Topic = pillar. Page = topic split by intent. Intent is text-based for now.")
+elif st.session_state.get("loaded") and st.session_state.get("run_id"):
+    st.divider()
+    st.caption(f"Showing run {st.session_state.run_id}")
+    render_results(st.session_state.run_id)

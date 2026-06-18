@@ -1,9 +1,7 @@
+# Front-end (Streamlit Community Cloud) dependencies only.
+# The engine's dependencies live in requirements-pipeline.txt and are installed
+# by the GitHub Action, not here. The clustering bench (cluster_lab.py) needs
+# scikit-learn, hdbscan and umap-learn, installed locally when needed.
 streamlit>=1.38.0
-openai>=2.7.0
 pandas>=2.2.0
-numpy>=1.26.0
-scikit-learn>=1.5.0
-plotly>=5.22.0
-# Used only by cluster_lab.py (the clustering bench), not by the app:
-hdbscan>=0.8.33
-umap-learn>=0.5.5
+requests>=2.31.0

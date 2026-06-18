@@ -321,7 +321,6 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
     ap.add_argument("--outdir", required=True)
-    ap.add_argument("--topic-threshold", type=float, default=0.55)   # applied to pillar centroids
     ap.add_argument("--pillar-threshold", type=float, default=0.45)
     ap.add_argument("--cache", default=".serp_cache.json")
     ap.add_argument("--location", default="United Kingdom")

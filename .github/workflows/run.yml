@@ -1,0 +1,110 @@
+name: Run keyword mapping
+
+# The engine (pipeline.py) runs here, server-side, so a run survives the browser
+# closing and has no practical timeout. The Streamlit front-end triggers this
+# workflow and reads the results back from the data branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run identifier (the front-end generates this)"
+        required: true
+      location:
+        description: "SERP location"
+        required: false
+        default: "United Kingdom"
+      pillar_threshold:
+        description: "Pillar clustering distance threshold"
+        required: false
+        default: "0.45"
+      data_branch:
+        description: "Branch holding inputs, results and the SERP cache"
+        required: false
+        default: "runs"
+
+permissions:
+  contents: write
+
+# One run at a time per data branch, so the shared SERP cache stays consistent.
+# Queued runs wait rather than cancel each other.
+concurrency:
+  group: kw-mapping-${{ github.event.inputs.data_branch }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      RUN_ID: ${{ github.event.inputs.run_id }}
+      DATA_BRANCH: ${{ github.event.inputs.data_branch }}
+      LOCATION: ${{ github.event.inputs.location }}
+      PILLAR_THRESHOLD: ${{ github.event.inputs.pillar_threshold }}
+    steps:
+      - name: Check out code (default branch)
+        uses: actions/checkout@v4
+
+      - name: Check out data branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.data_branch }}
+          path: _data
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install engine dependencies
+        run: pip install -r requirements-pipeline.txt
+
+      - name: Configure git in data checkout
+        working-directory: _data
+        run: |
+          git config user.name "kw-mapper-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+      - name: Mark run as started
+        working-directory: _data
+        run: |
+          mkdir -p "runs/$RUN_ID"
+          printf '{"status":"running","run_id":"%s"}' "$RUN_ID" > "runs/$RUN_ID/status.json"
+          git add -A
+          git commit -m "run $RUN_ID: started" || echo "nothing to commit"
+          git pull --rebase origin "$DATA_BRANCH" || true
+          git push origin "HEAD:$DATA_BRANCH"
+
+      - name: Run engine
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+        run: |
+          python pipeline.py \
+            --input "_data/runs/$RUN_ID/input.csv" \
+            --outdir "_data/runs/$RUN_ID" \
+            --cache "_data/serp_cache.json" \
+            --location "$LOCATION" \
+            --pillar-threshold "$PILLAR_THRESHOLD" \
+            --run-id "$RUN_ID"
+
+      - name: Commit results
+        if: success()
+        working-directory: _data
+        run: |
+          git add -A
+          git commit -m "run $RUN_ID: results" || echo "nothing to commit"
+          git pull --rebase origin "$DATA_BRANCH" || true
+          git push origin "HEAD:$DATA_BRANCH"
+
+      - name: Mark run as failed
+        if: failure()
+        working-directory: _data
+        run: |
+          mkdir -p "runs/$RUN_ID"
+          printf '{"status":"error","run_id":"%s","message":"Engine failed. See the Actions log for details."}' "$RUN_ID" > "runs/$RUN_ID/status.json"
+          git add -A
+          git commit -m "run $RUN_ID: failed" || echo "nothing to commit"
+          git pull --rebase origin "$DATA_BRANCH" || true
+          git push origin "HEAD:$DATA_BRANCH"
