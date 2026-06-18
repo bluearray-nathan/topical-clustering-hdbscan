@@ -26,17 +26,13 @@ Repo, Settings, Secrets and variables, Actions, New repository secret. Add three
 | `DATAFORSEO_LOGIN` | nathan@bluearray.co.uk |
 | `DATAFORSEO_PASSWORD` | your new DataForSEO password |
 
-## 3. Put the code on the default branch
+### Let the Action write its results back
 
-The workflow must live on the default branch (`main`) to be triggerable. Merge this branch into `main`:
+The engine commits results to the `runs` branch using the built-in Actions token, so that token needs write access. Repo, Settings, Actions, General, Workflow permissions: select **Read and write permissions**, then Save. Without this, a run fails when it tries to push the results.
 
-```
-git checkout main
-git merge clustering-lab
-git push origin main
-```
+## 3. Put the code on the default branch (done)
 
-(Or open a pull request from `clustering-lab` into `main` and merge it.)
+`clustering-lab` has been merged into `main` and pushed, so the workflow is already on the default branch. The `runs` branch has also been created with the SERP cache seeded, so your first run on the 591-keyword UK set is free. Nothing to do here.
 
 ## 4. Create a GitHub token for the front-end
 
