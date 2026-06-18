@@ -126,3 +126,21 @@ Honest caveats:
 - It is a prior, not gospel: their IA can be imperfect, and sometimes you will want to out-structure
   them to win, so it should be a weighted signal rather than an override.
 - Multiple competitors may disagree; aggregate or let the user set a primary.
+
+## Relevance check against the target domain
+
+Source: Nathan, 2026-06-18.
+
+The user names the domain they are building the clustering for. Once the pillars and pages are built,
+the tool flags any clusters that are clearly irrelevant to that domain, so off-topic noise (common in
+scraped or multi-source keyword lists) can be pruned.
+
+How it would work: derive a short description of what the domain offers (from the domain, or by reading
+its homepage), then have the model score each pillar's relevance to that scope and flag the clearly-off
+ones. Present them as flags for the user to confirm, never auto-delete (consistent with not removing
+anything without a check).
+
+Caveats: relevance is a judgement, and some clusters are adjacent rather than off-topic (a car insurer
+may legitimately want "courtesy car" content), so flag only the clearly irrelevant ones and leave the
+decision to the user. It is the inverse of the category-leadership and brand-coverage ideas: those say
+what the brand should cover, this prunes what it should not.
