@@ -144,3 +144,38 @@ Caveats: relevance is a judgement, and some clusters are adjacent rather than of
 may legitimately want "courtesy car" content), so flag only the clearly irrelevant ones and leave the
 decision to the user. It is the inverse of the category-leadership and brand-coverage ideas: those say
 what the brand should cover, this prunes what it should not.
+
+## User-defined entities as a cross-cutting filter
+
+Source: Nathan, 2026-06-18.
+
+Let users supply their own entities, the business-relevant dimensions they care about, and use them as
+an extra filter and grouping axis on top of Topic > Pillar > Page. Example: a travel client adds a list
+of countries, then filters the whole map to "Spain" to see every topic, pillar and page that relates to
+Spain, cutting across the hierarchy.
+
+The hierarchy answers "how should this content be structured". A user entity answers "show me the slice
+of it that matters to my business". The two are orthogonal, so this sits on top of the existing output
+rather than changing it.
+
+How it would work:
+- The user provides the entity list (countries, brands, product ranges, audiences). This can be seeded
+  from the "entities within the pillars" extraction above and confirmed by the user, or typed in directly.
+- Tag each keyword with the entities it relates to. Explicit mentions (a country or brand named in the
+  keyword) are reliable by matching; implicit ones (a city implying its country, a landmark implying a
+  destination) need the model or a reference list.
+- A keyword can carry zero, one, or several entities, so this is tagging, not partitioning. The
+  Topic > Pillar > Page hierarchy stays a clean split; entities are tags layered over it.
+- Surface it as a filter in the front-end and as extra columns in the export, with an "unassigned"
+  bucket for keywords that match no entity.
+
+It also opens up an entity-by-topic coverage view: for each entity (each country, say), how much of the
+topic and page structure it covers and at what search volume, which highlights where coverage is thin.
+
+Honest assessment and caveats:
+- Additive and low-risk: it annotates and filters, and does not touch the clustering logic.
+- Explicit entities are easy; implicit ones are harder and need the model or a gazetteer, with some error.
+- Plenty of keywords name no entity at all ("best time to visit"), so the unassigned bucket is essential;
+  do not force-fit them.
+- It overlaps with "Entities within the pillars": that extracts the entities a topic involves, this lets
+  the user pick the ones that matter and navigate by them. They can share one entity vocabulary.
