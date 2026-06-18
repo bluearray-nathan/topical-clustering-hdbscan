@@ -10,3 +10,5 @@ cluster_lab_out/
 # Python
 __pycache__/
 *.pyc
+.venv/
+venv/

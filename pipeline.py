@@ -119,6 +119,29 @@ def label_groups(df, col, kind="topic"):
     return labels
 
 
+def group_pillars_into_topics(pillar_labels):
+    """Ask the model to group the pillar labels into a small set of broad editorial sections.
+    Returns {pillar_label: topic_name}."""
+    if len(pillar_labels) <= 1:
+        return {p: p for p in pillar_labels}
+    sysmsg = ("You are an SEO information architect. Group these content pillars into a small set of "
+              "broad topical sections, aiming for 5 to 8. Every pillar goes in exactly one section. "
+              'Reply only as JSON: {"results":[{"pillar":"<pillar label>","section":"<section name>"}]}.')
+    out = {}
+    try:
+        data = _chat_json(sysmsg, "Pillars:\n" + "\n".join(f"- {p}" for p in pillar_labels))
+        for r in data.get("results", []):
+            p = str(r.get("pillar", "")).strip()
+            s = str(r.get("section", "")).strip()
+            if p:
+                out[p] = s or "Other"
+    except Exception:
+        pass
+    for p in pillar_labels:
+        out.setdefault(p, "Other")
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Intent: text base, then SERP (domain-based) override
 # --------------------------------------------------------------------------- #
@@ -276,7 +299,8 @@ def cluster_pages_in_pillar(idx, X, keywords, kw_to_results):
     ubiq = {d for d, ks in dom_kw.items() if len(ks) / n >= UBIQUITOUS_DF}
     filt = {k: {u for u in urlsets[k] if u.split("/")[0] not in ubiq} for k in sub_kw}
     sub = X[idx]
-    Ssem = np.clip(np.nan_to_num(sub @ sub.T), 0.0, 1.0)
+    with np.errstate(all="ignore"):
+        Ssem = np.clip(np.nan_to_num(sub @ sub.T), 0.0, 1.0)
     D = np.ones((n, n))
     for a in range(n):
         D[a, a] = 0.0
@@ -297,8 +321,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
     ap.add_argument("--outdir", required=True)
-    ap.add_argument("--topic-threshold", type=float, default=0.45)
-    ap.add_argument("--pillar-threshold", type=float, default=0.25)
+    ap.add_argument("--topic-threshold", type=float, default=0.55)   # applied to pillar centroids
+    ap.add_argument("--pillar-threshold", type=float, default=0.45)
     ap.add_argument("--cache", default=".serp_cache.json")
     ap.add_argument("--location", default="United Kingdom")
     ap.add_argument("--run-id", default="local")
@@ -315,11 +339,14 @@ def main():
     log(f"loaded {len(df)} keywords")
 
     X = embed(df["keyword"].tolist())
-    df["topic_id"] = cluster(X, args.topic_threshold)     # coarse: topics
-    df["pillar_id"] = cluster(X, args.pillar_threshold)   # finer: pillars (nest inside topics)
-    log(f"{df.topic_id.nunique()} topics, {df.pillar_id.nunique()} pillars")
-    df["topic"] = df.topic_id.map(label_groups(df, "topic_id", "topic"))
-    df["pillar"] = df.pillar_id.map(label_groups(df, "pillar_id", "pillar"))
+    df["pillar_id"] = cluster(X, args.pillar_threshold)   # pillars (themes)
+    pillar_labels = label_groups(df, "pillar_id", "pillar")
+    df["pillar"] = df["pillar_id"].map(pillar_labels)
+    # Topics: the model groups the pillars into broad editorial sections.
+    topic_of_label = group_pillars_into_topics(sorted(set(pillar_labels.values())))
+    df["topic"] = df["pillar"].map(topic_of_label).fillna("Other")
+    df["topic_id"] = df["topic"]
+    log(f"{df['topic'].nunique()} topics, {df['pillar_id'].nunique()} pillars")
 
     # ---- SERP via Standard queue, cached on disk by (location, keyword) ----
     cache = {}
