@@ -1,1 +1,1 @@
-{"status":"running","run_id":"20260618-204245"}
+{"status": "done", "run_id": "20260618-204245", "finished_at": "2026-06-18T20:49:36.118048Z", "n_keywords": 591, "n_topics": 7, "n_pillars": 21, "n_pages": 99, "intent_from_serp": 591, "intent_from_text": 0, "serp_cost_usd": 0.0, "timed_out": 0, "page_intent_distribution": {"Informational": 49, "Mixed": 27, "Commercial": 20, "Navigational": 3}}
