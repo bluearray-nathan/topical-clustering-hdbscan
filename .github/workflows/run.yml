@@ -75,6 +75,17 @@ jobs:
           git pull --rebase origin "$DATA_BRANCH" || true
           git push origin "HEAD:$DATA_BRANCH"
 
+      - name: Check engine credentials are present
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
+          DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+        run: |
+          echo "OPENAI_API_KEY length: ${#OPENAI_API_KEY}"
+          echo "DATAFORSEO_LOGIN length: ${#DATAFORSEO_LOGIN}"
+          echo "DATAFORSEO_PASSWORD length: ${#DATAFORSEO_PASSWORD}"
+          if [ -z "$OPENAI_API_KEY" ]; then echo "WARNING: OPENAI_API_KEY is EMPTY at the runner"; fi
+
       - name: Run engine
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
