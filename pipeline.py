@@ -96,26 +96,26 @@ def _chat_json(system, user):
     return json.loads(r.choices[0].message.content)
 
 
-def label_topics(df):
+def label_groups(df, col, kind="topic"):
     labels = {}
 
-    def one(tid):
-        kws = df[df.topic_id == tid].sort_values("volume", ascending=False, na_position="last")["keyword"].tolist()
+    def one(gid):
+        kws = df[df[col] == gid].sort_values("volume", ascending=False, na_position="last")["keyword"].tolist()
         sysmsg = "You are an SEO content analyst. Reply with only the label."
-        user = ("These keywords are one topic:\n" + ", ".join(kws[:25]) +
-                "\n\nGive a concise topic name in 1 to 4 words (noun phrase). Reply with only the name.")
+        user = (f"These keywords are one {kind}:\n" + ", ".join(kws[:25]) +
+                f"\n\nGive a concise {kind} name in 1 to 4 words (noun phrase). Reply with only the name.")
         try:
             r = client.chat.completions.create(model=LLM_MODEL, temperature=0.2,
                 messages=[{"role": "system", "content": sysmsg}, {"role": "user", "content": user}])
-            return tid, " ".join(r.choices[0].message.content.strip().strip('"').split()[:5]) or kws[0]
+            return gid, " ".join(r.choices[0].message.content.strip().strip('"').split()[:5]) or kws[0]
         except Exception:
-            return tid, kws[0] if kws else str(tid)
+            return gid, kws[0] if kws else str(gid)
 
-    ids = sorted(df.topic_id.unique())
+    ids = sorted(df[col].unique())
     with cf.ThreadPoolExecutor(max_workers=12) as ex:
-        for fut in cf.as_completed([ex.submit(one, t) for t in ids]):
-            tid, name = fut.result()
-            labels[tid] = name
+        for fut in cf.as_completed([ex.submit(one, g) for g in ids]):
+            gid, name = fut.result()
+            labels[gid] = name
     return labels
 
 
@@ -276,7 +276,7 @@ def cluster_pages_in_pillar(idx, X, keywords, kw_to_results):
     ubiq = {d for d, ks in dom_kw.items() if len(ks) / n >= UBIQUITOUS_DF}
     filt = {k: {u for u in urlsets[k] if u.split("/")[0] not in ubiq} for k in sub_kw}
     sub = X[idx]
-    Ssem = np.clip(sub @ sub.T, 0.0, 1.0)
+    Ssem = np.clip(np.nan_to_num(sub @ sub.T), 0.0, 1.0)
     D = np.ones((n, n))
     for a in range(n):
         D[a, a] = 0.0
@@ -297,7 +297,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
     ap.add_argument("--outdir", required=True)
-    ap.add_argument("--threshold", type=float, default=0.25)
+    ap.add_argument("--topic-threshold", type=float, default=0.45)
+    ap.add_argument("--pillar-threshold", type=float, default=0.25)
+    ap.add_argument("--cache", default=".serp_cache.json")
     ap.add_argument("--location", default="United Kingdom")
     ap.add_argument("--run-id", default="local")
     args = ap.parse_args()
@@ -313,16 +315,40 @@ def main():
     log(f"loaded {len(df)} keywords")
 
     X = embed(df["keyword"].tolist())
-    df["topic_id"] = cluster(X, args.threshold)
-    log(f"clustered into {df.topic_id.nunique()} topics")
+    df["topic_id"] = cluster(X, args.topic_threshold)     # coarse: topics
+    df["pillar_id"] = cluster(X, args.pillar_threshold)   # finer: pillars (nest inside topics)
+    log(f"{df.topic_id.nunique()} topics, {df.pillar_id.nunique()} pillars")
+    df["topic"] = df.topic_id.map(label_groups(df, "topic_id", "topic"))
+    df["pillar"] = df.pillar_id.map(label_groups(df, "pillar_id", "pillar"))
 
-    topic_labels = label_topics(df)
-    df["topic"] = df.topic_id.map(topic_labels)
+    # ---- SERP via Standard queue, cached on disk by (location, keyword) ----
+    cache = {}
+    if os.path.exists(args.cache):
+        try:
+            cache = json.load(open(args.cache))
+        except Exception:
+            cache = {}
 
-    log("starting SERP (Standard queue)")
-    id_to_kw, cost = dfs_post(df["keyword"].tolist(), args.location, auth)
-    log(f"submitted {len(id_to_kw)} tasks, cost ${cost:.2f}")
-    kw_to_results, timed_out = dfs_collect_results(id_to_kw, auth)
+    def ckey(kw):
+        return f"{args.location}|||{kw}"
+
+    keywords = df["keyword"].tolist()
+    to_fetch = [k for k in keywords if ckey(k) not in cache]
+    cost, timed_out = 0.0, 0
+    if to_fetch:
+        log(f"SERP (Standard queue): {len(to_fetch)} to fetch, {len(keywords) - len(to_fetch)} cached")
+        id_to_kw, cost = dfs_post(to_fetch, args.location, auth)
+        log(f"submitted {len(id_to_kw)} tasks, cost ${cost:.2f}")
+        fetched, timed_out = dfs_collect_results(id_to_kw, auth)
+        for k, res in fetched.items():
+            cache[ckey(k)] = res
+        try:
+            json.dump(cache, open(args.cache, "w"))
+        except Exception:
+            pass
+    else:
+        log("all SERPs served from cache")
+    kw_to_results = {k: (cache.get(ckey(k)) or []) for k in keywords}
 
     counts = serp_type_counts(kw_to_results)
     df["intent"] = df["keyword"].map(lambda k: decide_intent(k, kw_to_results, counts))
@@ -333,15 +359,14 @@ def main():
         ti = text_intent(df.loc[mask, "keyword"].tolist())
         df.loc[mask, "intent"] = df.loc[mask, "keyword"].map(lambda k: ti.get(k, "Informational"))
         df.loc[mask, "intent_source"] = "text"
-    log(f"intent set: {int((df.intent_source == 'serp').sum())} from SERP, "
-        f"{int((df.intent_source == 'text').sum())} text fallback; {timed_out} tasks timed out")
+    log(f"intent: {int((df.intent_source == 'serp').sum())} from SERP, "
+        f"{int((df.intent_source == 'text').sum())} text; {timed_out} timed out")
 
     # ---- Pages: blend semantic + specific-SERP overlap within each pillar ----
-    keywords = df["keyword"].tolist()
     page_ids = np.full(len(df), -1, dtype=int)
     next_id = 0
-    for pid in sorted(df["topic_id"].unique()):
-        idx = np.where(df["topic_id"].values == pid)[0]
+    for pid in sorted(df["pillar_id"].unique()):
+        idx = np.where(df["pillar_id"].values == pid)[0]
         local = cluster_pages_in_pillar(idx, X, keywords, kw_to_results)
         remap = {}
         for j, lab in zip(idx, local):
@@ -351,7 +376,7 @@ def main():
                 next_id += 1
             page_ids[j] = remap[lab]
     df["page_id"] = page_ids
-    log(f"formed {df.page_id.nunique()} pages across {df.topic_id.nunique()} pillars")
+    log(f"formed {df.page_id.nunique()} pages")
 
     # Page-level intent (dominant member intent, else Mixed); head term names the page
     p_intent, p_head = {}, {}
@@ -362,23 +387,25 @@ def main():
     df["page_intent"] = df["page_id"].map(p_intent)
     df["page"] = df["page_id"].map(p_head)
 
-    # ---- Outputs ----
-    df[["keyword", "volume", "topic", "page", "page_intent", "intent", "intent_source"]].rename(
-        columns={"keyword": "Keyword", "volume": "Volume", "topic": "Pillar", "page": "Page",
-                 "page_intent": "Page intent", "intent": "Keyword intent", "intent_source": "Intent source"}
+    # ---- Outputs: Topic > Pillar > Page ----
+    df[["keyword", "volume", "topic", "pillar", "page", "page_intent", "intent", "intent_source"]].rename(
+        columns={"keyword": "Keyword", "volume": "Volume", "topic": "Topic", "pillar": "Pillar",
+                 "page": "Page", "page_intent": "Page intent", "intent": "Keyword intent",
+                 "intent_source": "Intent source"}
     ).to_csv(os.path.join(args.outdir, "keyword_mapping.csv"), index=False)
 
     pages = (df.groupby("page_id").agg(
-                Pillar=("topic", "first"), Page=("page", "first"), Intent=("page_intent", "first"),
-                Keywords=("keyword", "size"), Volume=("volume", "sum"))
-             .reset_index(drop=True).sort_values("Volume", ascending=False, na_position="last"))
+                Topic=("topic", "first"), Pillar=("pillar", "first"), Page=("page", "first"),
+                Intent=("page_intent", "first"), Keywords=("keyword", "size"), Volume=("volume", "sum"))
+             .reset_index(drop=True).sort_values(["Topic", "Volume"], ascending=[True, False], na_position="last"))
     pages.to_csv(os.path.join(args.outdir, "page_summary.csv"), index=False)
 
     meta = {
         "run_id": args.run_id,
         "finished_at": dt.datetime.utcnow().isoformat() + "Z",
         "n_keywords": int(len(df)),
-        "n_pillars": int(df.topic_id.nunique()),
+        "n_topics": int(df.topic_id.nunique()),
+        "n_pillars": int(df.pillar_id.nunique()),
         "n_pages": int(df.page_id.nunique()),
         "intent_from_serp": int((df.intent_source == "serp").sum()),
         "intent_from_text": int((df.intent_source == "text").sum()),
@@ -387,14 +414,14 @@ def main():
         "page_intent_distribution": {k: int(v) for k, v in
                                      df.drop_duplicates("page_id")["page_intent"].value_counts().items()},
     }
-    result = {"meta": meta, "keywords": df[["keyword", "volume", "topic", "page", "page_intent",
-              "intent_source"]].rename(columns={"topic": "pillar"}).to_dict(orient="records")}
+    result = {"meta": meta, "keywords": df[["keyword", "volume", "topic", "pillar", "page",
+              "page_intent", "intent_source"]].to_dict(orient="records")}
     with open(os.path.join(args.outdir, "result.json"), "w") as f:
         json.dump(result, f)
     with open(os.path.join(args.outdir, "status.json"), "w") as f:
         json.dump({"status": "done", **meta}, f)
-    log(f"done: {meta['n_pillars']} pillars, {meta['n_pages']} pages, "
-        f"{meta['intent_from_serp']} intents from SERP, ${meta['serp_cost_usd']} SERP cost")
+    log(f"done: {meta['n_topics']} topics, {meta['n_pillars']} pillars, {meta['n_pages']} pages, "
+        f"${meta['serp_cost_usd']} SERP cost")
 
 
 if __name__ == "__main__":

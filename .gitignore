@@ -5,6 +5,7 @@
 # Local lab output and caches
 cluster_lab_out/
 *.npy
+.serp_cache.json
 
 # Python
 __pycache__/
