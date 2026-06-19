@@ -214,3 +214,75 @@ Honest assessment and caveats:
   simpler and probably enough to start.
 - If runs are re-pathed under a project, keep reading the old `runs/<run_id>/` location too, or migrate,
   so nothing already saved is lost.
+
+## Map page clusters to existing client pages, and a competitor overview
+
+Source: Nathan, 2026-06-19.
+
+For a client domain, map each recommended page (cluster) to the existing URL on the client's site that
+already ranks for the majority of that cluster's keywords. The output then says "you already have a page
+for this, here it is, improve it" rather than implying everything is new, and the pages with no matching
+client URL stand out as the genuine content gaps.
+
+It plugs in cheaply because we already pull the top 10 ranking URLs per keyword. For each page cluster,
+tally how often a client URL appears across its keywords and attach the one that covers the majority,
+with the share (for example "ranks for 24 of 31 keywords") and an average position.
+
+Add a competitor overview alongside it: for named competitor domains, show which of their URLs rank for
+each cluster's keywords and where (position), so the client sees who owns each page-level topic and how
+they have structured it. It uses the same SERP data and is the reporting counterpart to the "Competitor
+IA as a page-clustering signal" idea (that one uses competitor co-occurrence to influence the clustering;
+this one just reports it).
+
+How it would work:
+- Client domain (and optional competitor domains) entered up front. The relevance-check idea already
+  wants the client domain, so they can share that input.
+- For each page, tally client and competitor URLs across the member keywords' top-10 results. Attach the
+  dominant client URL as the "existing page", with coverage share and average position, else mark the
+  page as "new / gap".
+- Output per page: existing client URL, coverage (X of Y keywords), average position, plus a competitor
+  matrix (which competitor ranks, their top URL, average position).
+
+Caveats:
+- "Majority of keywords" needs a sensible threshold. Surface the share so the user can judge rather than
+  hard-deciding for them.
+- A client may rank one URL across several recommended pages (a sign to consolidate) or several URLs for
+  one page (a sign they have overlap to tidy). Both are useful, so report the mapping rather than forcing
+  it to be one-to-one.
+- It only sees keywords where the domain ranks in the top 10. Below that, this data cannot show it.
+
+## Column mapping and extra input data
+
+Source: Nathan, 2026-06-18 (requested in the earlier session, recovered 2026-06-19).
+
+Let the user upload a CSV with whatever columns they have and map them to the tool's inputs, rather than
+relying on fixed column-name detection. A short mapping step after upload (this column is the keyword,
+this is volume, this is difficulty, and so on) makes the tool work with an export from any source (Ahrefs,
+Semrush, Search Console) without re-formatting first.
+
+It also opens the door to extra input dimensions, such as keyword difficulty, CPC or current position,
+which can then enrich the output and the prioritisation (for example flag low-difficulty pages, or weight
+pages by opportunity rather than volume alone).
+
+- Fits the Upload step: once a file is read, show the detected columns and let the user assign each to a
+  role, remembering sensible defaults.
+- Keyword is required; volume and the rest are optional. Any extra columns flow through to the page and
+  keyword exports.
+
+## Visual output: charts and graphs
+
+Source: Nathan, 2026-06-18 (recovered 2026-06-19).
+
+Make the results far more visual rather than tables alone: a Topic > Pillar > Page tree or treemap, a
+volume-by-topic chart, an intent split, and a page-count or opportunity view. This helps a non-technical
+user read the structure at a glance and makes the output more presentable to a client. It sits on top of
+the existing output, since the data is already there.
+
+## Spend controls: per-run and monthly caps
+
+Source: Nathan, 2026-06-18 (recovered 2026-06-19).
+
+Add guardrails on cost: a maximum keywords-per-run limit and a total monthly keyword limit, so a large or
+accidental upload cannot run up an unexpected DataForSEO bill. Warn and require confirmation when an
+upload exceeds the per-run cap, and track usage against the monthly cap. This pairs naturally with showing
+the estimated SERP cost before the Run step.
