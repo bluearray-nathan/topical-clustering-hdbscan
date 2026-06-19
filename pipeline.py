@@ -234,6 +234,17 @@ def dfs_collect_results(id_to_kw, auth, timeout_s=14400, poll_s=10, on_progress=
     pending, out = dict(id_to_kw), {}
     deadline = time.time() + timeout_s
     last_flush = time.time()
+
+    def fetch_one(rid):
+        try:
+            jj = requests.get(f"{DFS_BASE}/task_get/advanced/{rid}", headers=headers, timeout=60).json()
+            items = ((jj.get("tasks") or [{}])[0].get("result") or [{}])[0].get("items") or []
+            org = [{"domain": i.get("domain"), "url": i.get("url"), "title": i.get("title")}
+                   for i in items if i.get("type") == "organic"]
+            return rid, org[:10]
+        except Exception:
+            return rid, []
+
     while pending and time.time() < deadline:
         ready = []
         try:
@@ -245,16 +256,11 @@ def dfs_collect_results(id_to_kw, auth, timeout_s=14400, poll_s=10, on_progress=
                         ready.append(res["id"])
         except Exception:
             ready = []
-        for rid in ready:
-            try:
-                jj = requests.get(f"{DFS_BASE}/task_get/advanced/{rid}", headers=headers, timeout=60).json()
-                items = ((jj.get("tasks") or [{}])[0].get("result") or [{}])[0].get("items") or []
-                org = [{"domain": i.get("domain"), "url": i.get("url"), "title": i.get("title")}
-                       for i in items if i.get("type") == "organic"]
-                out[pending[rid]] = org[:10]
-            except Exception:
-                out[pending[rid]] = []
-            pending.pop(rid, None)
+        if ready:
+            with cf.ThreadPoolExecutor(max_workers=10) as ex:
+                for rid, org in ex.map(fetch_one, ready):
+                    out[pending[rid]] = org
+                    pending.pop(rid, None)
         log(f"  collected {len(out)}/{len(id_to_kw)} SERPs")
         if on_progress and ready and time.time() - last_flush >= flush_s:
             on_progress(out)
@@ -285,8 +291,8 @@ def nav_check(kw, results):
 
 def serp_type_counts(kw_to_results):
     """Model labels each of the top 10 ranking pages and returns the count of each page type
-    per keyword. Navigational SERPs are skipped (handled by nav_check)."""
-    out = {}
+    per keyword. Navigational SERPs are skipped (handled by nav_check). Batches run in parallel,
+    which is the difference between minutes and a couple of hours on a large keyword set."""
     sysmsg = ("For each keyword you are given its top 10 organic results (domain, url, title). Classify "
               "each result's page type as one of: Informational (guides, explainers, definitions), "
               "Commercial (comparison, review or aggregator pages), Transactional (product, quote, buy or "
@@ -294,16 +300,24 @@ def serp_type_counts(kw_to_results):
               'results, per keyword. Reply only as JSON: {"results":[{"keyword":"...","Informational":int,'
               '"Commercial":int,"Transactional":int,"Local":int}]}.')
     have = [k for k, v in kw_to_results.items() if v and not nav_check(k, v)]
-    for i in range(0, len(have), 8):
-        batch = have[i:i + 8]
+
+    def one_batch(batch):
         payload = [{"keyword": k, "ranking_results": kw_to_results[k]} for k in batch]
+        res = {}
         try:
             data = _chat_json(sysmsg, "Count page types:\n" + json.dumps(payload))
             for x in data.get("results", []):
                 k = str(x.get("keyword", "")).strip()
-                out[k] = {t: int(x.get(t, 0) or 0) for t in PAGE_TYPES}
+                res[k] = {t: int(x.get(t, 0) or 0) for t in PAGE_TYPES}
         except Exception:
             pass
+        return res
+
+    batches = [have[i:i + 8] for i in range(0, len(have), 8)]
+    out = {}
+    with cf.ThreadPoolExecutor(max_workers=12) as ex:
+        for fut in cf.as_completed([ex.submit(one_batch, b) for b in batches]):
+            out.update(fut.result())
     return out
 
 
