@@ -1,0 +1,11 @@
+# Blue Array brand theme (2026 palette).
+# Fonts (Source Serif 4 headings, Raleway body) are loaded via CSS in app.py,
+# because Google Fonts need an @import that the native theme cannot do alone.
+[theme]
+base = "light"
+primaryColor = "#1291D2"               # Primary Blue: buttons, links, accents
+backgroundColor = "#FFFFFF"            # White page
+secondaryBackgroundColor = "#EAF1F9"   # Light Blue: sidebar, panels, inputs
+textColor = "#002140"                  # Dark Navy text (never grey)
+font = "Raleway"                       # Body font (loaded via @import in app.py)
+headingFont = "Source Serif 4"         # Heading font

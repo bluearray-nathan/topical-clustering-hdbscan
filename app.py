@@ -11,6 +11,7 @@
 # credentials live in GitHub Actions secrets, so they never touch the front-end.
 
 import io
+import os
 import json
 import time
 import base64
@@ -20,8 +21,36 @@ import pandas as pd
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Keyword to Page Mapping", layout="wide")
-st.title("Keyword to Page Mapping")
+st.set_page_config(page_title="Keyword to page mapping", page_icon="🔵", layout="wide")
+
+# --------------------------- Blue Array branding -------------------------- #
+# 2026 palette lives in .streamlit/config.toml. Fonts (Source Serif 4 headings,
+# Raleway body) need a Google Fonts @import, so they go in here. This block runs
+# before the secrets gate below, so the brand shows even on the config screen.
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Raleway:wght@400;500;600&family=Source+Serif+4:wght@600;700&display=swap');
+    html, body, .stApp, [data-testid="stSidebar"], .stMarkdown, .stMetric,
+    .stButton > button, .stDownloadButton > button, input, textarea, select {
+        font-family: 'Raleway', sans-serif;
+    }
+    h1, h2, h3, h4, [data-testid="stHeading"] {
+        font-family: 'Source Serif 4', Georgia, serif !important;
+        font-weight: 600;
+        color: #002140;
+    }
+    a, a:visited { color: #1291D2; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+_LOGO = os.path.join(os.path.dirname(__file__), "assets", "logo-colour-converts.png")
+if os.path.exists(_LOGO):
+    st.logo(_LOGO, size="large", link="https://www.bluearray.co.uk")
+
+st.title("Keyword to page mapping")
 
 # --------------------------- config from secrets --------------------------- #
 try:
@@ -123,9 +152,9 @@ def list_runs():
 def vol(x):
     try:
         v = float(x)
-        return f"{int(v):,}" if pd.notna(v) else "—"
+        return f"{int(v):,}" if pd.notna(v) else "-"
     except Exception:
-        return "—"
+        return "-"
 
 
 def read_csv_bytes(b):
@@ -148,10 +177,10 @@ def render_results(run_id):
 
     st.subheader("Results")
     c = st.columns(5)
-    c[0].metric("Topics", meta.get("n_topics", "—"))
-    c[1].metric("Pillars", meta.get("n_pillars", "—"))
-    c[2].metric("Pages", meta.get("n_pages", "—"))
-    c[3].metric("Keywords", meta.get("n_keywords", "—"))
+    c[0].metric("Topics", meta.get("n_topics", "-"))
+    c[1].metric("Pillars", meta.get("n_pillars", "-"))
+    c[2].metric("Pages", meta.get("n_pages", "-"))
+    c[3].metric("Keywords", meta.get("n_keywords", "-"))
     c[4].metric("SERP cost", f"${meta.get('serp_cost_usd', 0)}")
 
     bits = []
@@ -212,8 +241,8 @@ with st.sidebar:
     runs = list_runs()
     if runs:
         st.caption("Load a previous run")
-        pick = st.selectbox("Previous runs", ["—"] + runs, label_visibility="collapsed")
-        if pick != "—" and st.button("Load", use_container_width=True):
+        pick = st.selectbox("Previous runs", ["-"] + runs, label_visibility="collapsed")
+        if pick != "-" and st.button("Load", use_container_width=True):
             st.session_state.run_id = pick
             st.session_state.running = False
             st.session_state.loaded = True
