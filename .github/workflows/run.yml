@@ -103,6 +103,15 @@ jobs:
             --pillar-threshold "$PILLAR_THRESHOLD" \
             --run-id "$RUN_ID"
 
+      - name: Save SERP cache if the run is cancelled
+        if: cancelled()
+        working-directory: _data
+        run: |
+          git add serp_cache.json || true
+          git commit -m "run $RUN_ID: SERP cache saved on cancel" || echo "nothing to commit"
+          git pull --rebase origin "$DATA_BRANCH" || true
+          git push origin "HEAD:$DATA_BRANCH" || true
+
       - name: Commit results
         if: success()
         working-directory: _data
