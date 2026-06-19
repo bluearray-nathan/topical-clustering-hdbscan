@@ -21,7 +21,7 @@ import pandas as pd
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="Keyword to page mapping", page_icon="🔵", layout="wide")
+st.set_page_config(page_title="Keyword & topical clustering tool", page_icon="🔵", layout="wide")
 
 # --------------------------- Blue Array branding -------------------------- #
 # 2026 palette lives in .streamlit/config.toml. Fonts (Source Serif 4 headings,
@@ -41,6 +41,13 @@ st.markdown(
         color: #002140;
     }
     a, a:visited { color: #1291D2; }
+    .ba-stepper { display:flex; align-items:center; margin:.25rem 0 1.75rem; }
+    .ba-step { display:flex; align-items:center; white-space:nowrap; font-family:'Raleway',sans-serif; font-weight:500; font-size:.95rem; color:rgba(0,33,64,.45); }
+    .ba-step .ba-dot { width:30px; height:30px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; margin-right:.5rem; background:#EAF1F9; color:#1291D2; font-weight:600; border:2px solid #cfe0f2; }
+    .ba-step.active, .ba-step.done { color:#002140; }
+    .ba-step.active .ba-dot, .ba-step.done .ba-dot { background:#1291D2; color:#fff; border-color:#1291D2; }
+    .ba-conn { flex:1; height:2px; background:#cfe0f2; margin:0 .75rem; }
+    .ba-conn.done { background:#1291D2; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -50,7 +57,7 @@ _LOGO = os.path.join(os.path.dirname(__file__), "assets", "logo-colour-converts.
 if os.path.exists(_LOGO):
     st.logo(_LOGO, size="large", link="https://www.bluearray.co.uk")
 
-st.title("Keyword to page mapping")
+st.title("Keyword & topical clustering tool")
 
 # --------------------------- config from secrets --------------------------- #
 try:
@@ -227,116 +234,195 @@ def render_results(run_id):
                            f"page_summary_{run_id}.csv", "text/csv")
 
 
-# --------------------------------- sidebar --------------------------------- #
-with st.sidebar:
-    st.header("Run settings")
-    location = st.text_input("SERP location", value="United Kingdom").strip() or "United Kingdom"
-    with st.expander("Advanced"):
-        pillar_threshold = st.slider(
-            "Pillar tightness (cosine distance)",
-            min_value=0.35, max_value=0.55, value=0.45, step=0.01,
-            help="Lower = tighter, more pillars. 0.45 is the validated default.")
-    st.divider()
-    st.caption(f"Engine: GitHub Actions on `{REPO}`")
+# ------------------------------- wizard setup ------------------------------ #
+STEPS = ["Upload", "Settings", "Run", "Results"]
+ss = st.session_state
+ss.setdefault("step", 1)
+ss.setdefault("csv_bytes", None)
+ss.setdefault("n_rows", 0)
+ss.setdefault("location", "United Kingdom")
+ss.setdefault("pillar_threshold", 0.45)
+ss.setdefault("running", False)
+
+
+def goto(step):
+    ss.step = step
+    st.rerun()
+
+
+def show_stepper(current):
+    html = ['<div class="ba-stepper">']
+    for i, label in enumerate(STEPS, start=1):
+        cls = "active" if i == current else ("done" if i < current else "todo")
+        dot = "&#10003;" if i < current else str(i)
+        html.append(f'<div class="ba-step {cls}"><span class="ba-dot">{dot}</span>{label}</div>')
+        if i < len(STEPS):
+            html.append(f'<div class="ba-conn {"done" if i < current else ""}"></div>')
+    html.append("</div>")
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+
+show_stepper(ss.step)
+
+# --------------------------------- step 1 ---------------------------------- #
+if ss.step == 1:
+    st.subheader("1. Upload your keyword list")
+    with st.expander("How to use this tool", expanded=ss.csv_bytes is None):
+        st.markdown(
+            "This tool turns a flat keyword list into a ready-to-build site structure: a "
+            "three-level **Topic > Pillar > Page** map, with the search intent of every page.\n\n"
+            "**What to upload.** A CSV with one keyword per row. Add a search volume column if you "
+            "have one and it will order the results and name each page after its biggest term, but "
+            "it is optional. Keywords can come from anywhere: Ahrefs, Semrush, Search Console, "
+            "Reddit, or your own brainstorm.\n\n"
+            "**How to read the result.**\n"
+            "- **Page** is the level you build. One URL should target the keywords grouped under it.\n"
+            "- **Pillar** gathers closely related pages under a shared theme.\n"
+            "- **Topic** is the broad editorial section a pillar sits in.\n"
+            "- **Intent** (Informational, Commercial, Transactional, Navigational, Local or Mixed) "
+            "is read from the pages actually ranking for each keyword, so it reflects what Google "
+            "rewards rather than a guess.\n\n"
+            "**Getting the best from it.** Run one product area or section at a time rather than a "
+            "whole site at once, so the groups stay clean. If the result feels over- or "
+            "under-split, change **Pillar tightness** in Settings and run again. Re-running on the "
+            "same keywords is quick and nearly free, so it is worth iterating.\n\n"
+            "**What you get back.** A map you can browse on screen, plus two downloads: a "
+            "keyword-level mapping and a page-level summary you can hand to a writer or developer."
+        )
+    up = st.file_uploader("CSV with a keyword column (volume optional).", type=["csv"])
+    if up is not None:
+        try:
+            preview = pd.read_csv(up)
+            preview.columns = [str(c).strip() for c in preview.columns]
+            low = {c.lower(): c for c in preview.columns}
+            if not any(c in low for c in ["keyword", "keywords", "query", "term"]):
+                st.error(f"No keyword column found. Columns seen: {list(preview.columns)}")
+                ss.csv_bytes = None
+            else:
+                up.seek(0)
+                ss.csv_bytes = up.read()
+                ss.n_rows = len(preview)
+                st.success(f"{ss.n_rows} keywords ready.")
+                st.dataframe(preview.head(10), hide_index=True, use_container_width=True)
+        except Exception as e:
+            st.error(f"Could not read the CSV: {e}")
+            ss.csv_bytes = None
+
     runs = list_runs()
     if runs:
-        st.caption("Load a previous run")
-        pick = st.selectbox("Previous runs", ["-"] + runs, label_visibility="collapsed")
-        if pick != "-" and st.button("Load", use_container_width=True):
-            st.session_state.run_id = pick
-            st.session_state.running = False
-            st.session_state.loaded = True
+        with st.expander("Or open a previous run"):
+            pick = st.selectbox("Previous runs", ["-"] + runs, label_visibility="collapsed")
+            if pick != "-" and st.button("Open this run"):
+                ss.run_id = pick
+                ss.running = False
+                ss.loaded = True
+                goto(4)
+
+    st.divider()
+    _, nxt = st.columns([3, 1])
+    if nxt.button("Next", type="primary", use_container_width=True,
+                  disabled=ss.csv_bytes is None):
+        goto(2)
+
+# --------------------------------- step 2 ---------------------------------- #
+elif ss.step == 2:
+    st.subheader("2. Settings")
+    ss.location = st.text_input("SERP location", value=ss.location).strip() or "United Kingdom"
+    st.caption("The country whose Google results are read to judge each keyword's intent.")
+    with st.expander("Advanced"):
+        ss.pillar_threshold = st.slider(
+            "Pillar tightness (cosine distance)",
+            min_value=0.35, max_value=0.55, value=ss.pillar_threshold, step=0.01,
+            help="Lower = tighter, more pillars. 0.45 is the validated default.")
+    st.divider()
+    back, nxt = st.columns(2)
+    if back.button("Back", use_container_width=True):
+        goto(1)
+    if nxt.button("Next", type="primary", use_container_width=True):
+        goto(3)
+
+# --------------------------------- step 3 ---------------------------------- #
+elif ss.step == 3:
+    st.subheader("3. Run the mapping")
+    st.markdown(f"Ready to map **{ss.n_rows} keywords** for **{ss.location}** "
+                f"(pillar tightness {ss.pillar_threshold:.2f}).")
+    st.caption("The run happens on a server, so you can close this tab and come back. The first "
+               "run on new keywords takes a few minutes while it reads the SERPs; later runs on "
+               "the same keywords are quick.")
+
+    if not ss.running:
+        back, run = st.columns(2)
+        if back.button("Back", use_container_width=True):
+            goto(2)
+        if run.button("Run mapping", type="primary", use_container_width=True):
+            run_id = dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+            with st.spinner("Submitting the run..."):
+                if not gh_ensure_branch(DATA_BRANCH, CODE_BRANCH):
+                    st.error(f"Could not find or create the `{DATA_BRANCH}` branch. "
+                             "Check the token has repo access.")
+                    st.stop()
+                ok, r = gh_put_file(f"runs/{run_id}/input.csv", ss.csv_bytes, DATA_BRANCH,
+                                    f"run {run_id}: input")
+                if not ok:
+                    st.error(f"Could not upload the keyword list (HTTP {r.status_code}). "
+                             "Check the token scopes (repo).")
+                    st.stop()
+                ok, r = gh_dispatch(run_id, ss.location, ss.pillar_threshold)
+                if not ok:
+                    st.error(f"Could not trigger the workflow (HTTP {r.status_code}). "
+                             "Check the workflow is on the default branch and the token "
+                             "has the workflow scope.")
+                    st.stop()
+            ss.run_id = run_id
+            ss.start_ts = time.time()
+            ss.running = True
+            ss.loaded = False
+            st.rerun()
+    else:
+        rid = ss.run_id
+        raw = gh_get_file(f"runs/{rid}/status.json", DATA_BRANCH)
+        status = {}
+        if raw:
+            try:
+                status = json.loads(raw)
+            except Exception:
+                status = {}
+        s = status.get("status", "queued")
+        elapsed = int(time.time() - ss.get("start_ts", time.time()))
+        if s == "done":
+            ss.running = False
+            ss.loaded = True
+            goto(4)
+        elif s == "error":
+            ss.running = False
+            st.error(f"The run failed: {status.get('message', 'see the run log')}.")
+            url = latest_run_url()
+            if url:
+                st.markdown(f"[View the run log]({url})")
+            if st.button("Back to settings"):
+                goto(2)
+        else:
+            msg = {"queued": "Queued, the run is starting", "running": "Running"}.get(s, s)
+            st.info(f"{msg}... {elapsed}s elapsed. You can safely close this tab and come back.")
+            url = latest_run_url()
+            if url:
+                st.caption(f"[Watch the live log]({url})")
+            time.sleep(POLL_SECONDS)
             st.rerun()
 
-with st.expander("What this does"):
-    st.markdown(
-        "Maps a keyword list to a **Topic > Pillar > Page** structure. Pillars are semantic "
-        "themes, pages blend meaning with SERP overlap, and topics are broad editorial sections. "
-        "Each page carries an intent read from its ranking SERPs.\n\n"
-        "The engine runs on GitHub Actions, so you can close this tab while it works. "
-        "The first run on a fresh keyword set fetches SERPs (a few minutes); after that the "
-        "SERPs are cached, so re-runs are quick and cost only a little OpenAI."
-    )
-
-# ------------------------------- upload + run ------------------------------ #
-st.subheader("1. Upload your keyword list")
-file = st.file_uploader("CSV with a keyword column (volume optional).", type=["csv"])
-
-if file is not None:
-    try:
-        preview = pd.read_csv(file)
-        preview.columns = [str(c).strip() for c in preview.columns]
-        low = {c.lower(): c for c in preview.columns}
-        has_kw = any(c in low for c in ["keyword", "keywords", "query", "term"])
-        if not has_kw:
-            st.error(f"No keyword column found. Columns seen: {list(preview.columns)}")
-        else:
-            st.success(f"{len(preview)} rows ready.")
-            file.seek(0)
-            csv_bytes = file.read()
-            st.subheader("2. Run the mapping")
-            if st.button("Run mapping", type="primary"):
-                run_id = dt.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-                with st.spinner("Submitting the run..."):
-                    if not gh_ensure_branch(DATA_BRANCH, CODE_BRANCH):
-                        st.error(f"Could not find or create the `{DATA_BRANCH}` branch. "
-                                 "Check the token has repo access.")
-                        st.stop()
-                    ok, r = gh_put_file(f"runs/{run_id}/input.csv", csv_bytes, DATA_BRANCH,
-                                        f"run {run_id}: input")
-                    if not ok:
-                        st.error(f"Could not upload the keyword list (HTTP {r.status_code}). "
-                                 "Check the token scopes (repo).")
-                        st.stop()
-                    ok, r = gh_dispatch(run_id, location, pillar_threshold)
-                    if not ok:
-                        st.error(f"Could not trigger the workflow (HTTP {r.status_code}). "
-                                 "Check the workflow is on the default branch and the token "
-                                 "has the workflow scope.")
-                        st.stop()
-                st.session_state.run_id = run_id
-                st.session_state.start_ts = time.time()
-                st.session_state.running = True
-                st.session_state.loaded = False
-                st.rerun()
-    except Exception as e:
-        st.error(f"Could not read the CSV: {e}")
-
-# ------------------------------- poll / show ------------------------------- #
-if st.session_state.get("running"):
-    rid = st.session_state.run_id
-    raw = gh_get_file(f"runs/{rid}/status.json", DATA_BRANCH)
-    status = {}
-    if raw:
-        try:
-            status = json.loads(raw)
-        except Exception:
-            status = {}
-    s = status.get("status", "queued")
-    elapsed = int(time.time() - st.session_state.get("start_ts", time.time()))
-
-    st.divider()
-    if s == "done":
-        st.session_state.running = False
-        st.success(f"Done in about {elapsed}s.")
-        render_results(rid)
-    elif s == "error":
-        st.session_state.running = False
-        st.error(f"The run failed: {status.get('message', 'see the Actions log')}.")
-        url = latest_run_url()
-        if url:
-            st.markdown(f"[View the Actions log]({url})")
+# --------------------------------- step 4 ---------------------------------- #
+elif ss.step == 4:
+    if ss.get("run_id"):
+        render_results(ss.run_id)
     else:
-        msg = {"queued": "Queued, the Action is starting",
-               "running": "Running"}.get(s, s)
-        st.info(f"{msg}... {elapsed}s elapsed. You can safely close this tab and come back.")
-        url = latest_run_url()
-        if url:
-            st.caption(f"[Watch the live log on GitHub]({url})")
-        time.sleep(POLL_SECONDS)
-        st.rerun()
-
-elif st.session_state.get("loaded") and st.session_state.get("run_id"):
+        st.info("No run to show yet. Go back to step 1 to upload a keyword list.")
     st.divider()
-    st.caption(f"Showing run {st.session_state.run_id}")
-    render_results(st.session_state.run_id)
+    if st.button("Start a new run"):
+        for k in ("run_id", "start_ts"):
+            ss.pop(k, None)
+        ss.step = 1
+        ss.csv_bytes = None
+        ss.n_rows = 0
+        ss.running = False
+        ss.loaded = False
+        st.rerun()
