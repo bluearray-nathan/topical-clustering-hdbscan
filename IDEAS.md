@@ -179,3 +179,38 @@ Honest assessment and caveats:
   do not force-fit them.
 - It overlaps with "Entities within the pillars": that extracts the entities a topic involves, this lets
   the user pick the ones that matter and navigate by them. They can share one entity vocabulary.
+
+## Named runs and projects
+
+Source: Nathan, 2026-06-19.
+
+Today a run is identified only by a timestamp (the run_id, e.g. 20260619-103040), and the "open a
+previous run" control in step 1 is a flat list of those timestamps. As the tool gets used across clients
+and keyword sets, that list becomes hard to navigate. Two improvements:
+
+- Let the user give a run a title when they run it (for example "RAC car insurance, UK, June"), stored
+  with the run and shown wherever runs are listed, so past runs are recognisable at a glance rather than
+  by timestamp.
+- Let the user group runs into projects (typically a client or a site), so previous runs are organised
+  and easy to come back to. The previous-runs picker becomes project, then run, rather than one long
+  flat list.
+
+How it would work:
+- Add a title (free text) and a project (pick an existing one or create a new one) to the Run step,
+  before "Run mapping".
+- Persist both with the run. The data branch already stores each run under `runs/<run_id>/`; add the
+  title and project to the run's `result.json` / `status.json` meta, and optionally namespace the path
+  as `runs/<project>/<run_id>/` so a project's runs sit together. The SERP cache stays shared (it is
+  keyed by location + keyword), so projects do not duplicate SERP spend on overlapping keywords.
+- In the front-end, replace the flat previous-runs selectbox with a project picker then a run picker,
+  each run shown by its title and date. A light projects view could list projects with their run counts.
+
+Honest assessment and caveats:
+- Mostly a front-end and metadata change; it does not touch the clustering or intent logic, so it is
+  low-risk and additive.
+- Keep it backwards compatible: existing timestamp-only runs should still load (treat them as an
+  "untitled" / "no project" bucket).
+- Decide whether a project is just a label on runs or a first-class object. The label approach is
+  simpler and probably enough to start.
+- If runs are re-pathed under a project, keep reading the old `runs/<run_id>/` location too, or migrate,
+  so nothing already saved is lost.
