@@ -142,6 +142,46 @@ def group_pillars_into_topics(pillar_labels):
     return out
 
 
+def name_pages(df, page_intent):
+    """Name pages with the model, one pillar at a time so it sees the sibling pages and gives
+    each a distinct, descriptive title (a guide and a comparison page on the same subject get
+    clearly different names). Returns {page_id: name}; falls back to the head term if missed."""
+    names = {}
+    sysmsg = ("You are an SEO content strategist. You are given the pages within one content pillar, "
+              "each as a list of keywords and a dominant intent. Give every page a short, descriptive "
+              "title (2 to 6 words, title case) reflecting both its subject and its angle, so a guide "
+              "and a comparison page on the same subject get clearly different titles. Every title must "
+              "be DISTINCT. Do not use quotation marks or the word 'page'. "
+              'Reply only as JSON: {"results":[{"id":<id>,"title":"..."}]}.')
+
+    def one_pillar(pid):
+        sub = df[df["pillar_id"] == pid]
+        pages = []
+        for pgid, grp in sub.groupby("page_id"):
+            kws = grp.sort_values("volume", ascending=False, na_position="last")["keyword"].tolist()
+            pages.append({"id": int(pgid), "intent": page_intent.get(pgid, "Mixed"), "keywords": kws[:15]})
+        try:
+            data = _chat_json(sysmsg, "Pages in this pillar:\n" + json.dumps(pages))
+            out = {}
+            for r in data.get("results", []):
+                try:
+                    out[int(r["id"])] = " ".join(str(r.get("title", "")).strip().strip('"').split()[:8])
+                except Exception:
+                    pass
+            return out
+        except Exception:
+            return {}
+
+    pids = sorted(df["pillar_id"].unique())
+    with cf.ThreadPoolExecutor(max_workers=12) as ex:
+        for fut in cf.as_completed([ex.submit(one_pillar, p) for p in pids]):
+            names.update(fut.result())
+    for pgid, grp in df.groupby("page_id"):                       # fallback: head term
+        if not names.get(pgid):
+            names[pgid] = grp.sort_values("volume", ascending=False, na_position="last")["keyword"].iloc[0]
+    return names
+
+
 # --------------------------------------------------------------------------- #
 # Intent: text base, then SERP (domain-based) override
 # --------------------------------------------------------------------------- #
@@ -185,12 +225,15 @@ def dfs_post(keywords, location, auth):
     return id_to_kw, cost
 
 
-def dfs_collect_results(id_to_kw, auth, timeout_s=2400, poll_s=10):
+def dfs_collect_results(id_to_kw, auth, timeout_s=14400, poll_s=10, on_progress=None, flush_s=60):
     """Poll tasks_ready, fetch advanced results, keep the top organic results per keyword.
-    Returns (kw_to_results, timed_out_count)."""
+    on_progress(out), if given, is called at most every flush_s seconds and once at the end,
+    so results can be cached as they arrive and a long or interrupted run never loses the
+    SERPs it has already paid for. Returns (kw_to_results, timed_out_count)."""
     headers = {"Authorization": "Basic " + auth}
     pending, out = dict(id_to_kw), {}
     deadline = time.time() + timeout_s
+    last_flush = time.time()
     while pending and time.time() < deadline:
         ready = []
         try:
@@ -213,8 +256,13 @@ def dfs_collect_results(id_to_kw, auth, timeout_s=2400, poll_s=10):
                 out[pending[rid]] = []
             pending.pop(rid, None)
         log(f"  collected {len(out)}/{len(id_to_kw)} SERPs")
+        if on_progress and ready and time.time() - last_flush >= flush_s:
+            on_progress(out)
+            last_flush = time.time()
         if pending:
             time.sleep(poll_s)
+    if on_progress:
+        on_progress(out)
     return out, len(pending)
 
 
@@ -365,13 +413,17 @@ def main():
         log(f"SERP (Standard queue): {len(to_fetch)} to fetch, {len(keywords) - len(to_fetch)} cached")
         id_to_kw, cost = dfs_post(to_fetch, args.location, auth)
         log(f"submitted {len(id_to_kw)} tasks, cost ${cost:.2f}")
-        fetched, timed_out = dfs_collect_results(id_to_kw, auth)
-        for k, res in fetched.items():
-            cache[ckey(k)] = res
-        try:
-            json.dump(cache, open(args.cache, "w"))
-        except Exception:
-            pass
+
+        def checkpoint(fetched):
+            """Persist SERPs as they arrive, so a long or interrupted run keeps what it paid for."""
+            for k, res in fetched.items():
+                cache[ckey(k)] = res
+            try:
+                json.dump(cache, open(args.cache, "w"))
+            except Exception:
+                pass
+
+        _, timed_out = dfs_collect_results(id_to_kw, auth, on_progress=checkpoint)
     else:
         log("all SERPs served from cache")
     kw_to_results = {k: (cache.get(ckey(k)) or []) for k in keywords}
@@ -404,14 +456,17 @@ def main():
     df["page_id"] = page_ids
     log(f"formed {df.page_id.nunique()} pages")
 
-    # Page-level intent (dominant member intent, else Mixed); head term names the page
-    p_intent, p_head = {}, {}
+    # Page-level intent (dominant member intent, else Mixed)
+    p_intent = {}
     for pgid, grp in df.groupby("page_id"):
         ic = grp["intent"].value_counts()
         p_intent[pgid] = ic.index[0] if ic.iloc[0] / len(grp) >= MIXED_BELOW else "Mixed"
-        p_head[pgid] = grp.sort_values("volume", ascending=False, na_position="last")["keyword"].iloc[0]
     df["page_intent"] = df["page_id"].map(p_intent)
-    df["page"] = df["page_id"].map(p_head)
+    # The model names each page from its keywords and intent, so pages that differ mainly
+    # by intent (a guide versus a comparison page) get clearly distinct names.
+    page_names = name_pages(df, p_intent)
+    df["page"] = df["page_id"].map(page_names)
+    log(f"named {len(page_names)} pages")
 
     # ---- Outputs: Topic > Pillar > Page ----
     df[["keyword", "volume", "topic", "pillar", "page", "page_intent", "intent", "intent_source"]].rename(

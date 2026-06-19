@@ -35,7 +35,10 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Big keyword sets can spend a long time waiting on the SERP queue. The engine
+    # caps its own SERP wait (timeout_s) below this, so it always returns and commits
+    # its results and cache before the job is cut off. GitHub's hard ceiling is 6 hours.
+    timeout-minutes: 300
     env:
       RUN_ID: ${{ github.event.inputs.run_id }}
       DATA_BRANCH: ${{ github.event.inputs.data_branch }}
