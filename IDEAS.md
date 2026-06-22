@@ -433,3 +433,35 @@ Caveats:
   fragments; label them after splitting.
 - Relates to the scalable-clustering idea: HDBSCAN varies density per region instead of using one global
   threshold, which would handle this more naturally.
+
+## Designate the pillar (hub) page per cluster
+
+Source: Nathan, 2026-06-22.
+
+When building a content cluster you build a pillar/hub page: the broad page targeting the head term that
+the supporting pages link up to. The tool already contains that page inside each pillar, but does not mark
+it; the pillar is only a grouping label and the pages sit as a flat list, so the user has to spot the hub.
+
+What it should do:
+- For each pillar, designate the hub page (the broad overview page targeting the pillar's head term).
+- Mark the rest as supporting pages and record the linking direction (supporting pages link up to the hub).
+- Name the pillar after its hub page, so the label matches the page you would actually build. Today the
+  label "Crowdfunding Essentials" does not match the real hub "Crowdfunding Overview and Platforms".
+
+How to pick the hub (validated on the 14k crowdfunding set):
+- Simple rule (the page holding the pillar's highest-volume keyword): right for clear cases, and in 62% of
+  multi-page pillars it is also the highest-volume page. But it mis-picks when the top keyword is a narrow
+  sub-query, for example it chose "Football Team Fundraising Ideas" over "Creative Fundraising Ideas for
+  Teams".
+- Model pick (give the model each pillar's top pages with their keywords, volume and intent, ask for the
+  hub, preferring breadth and overview intent over a high-volume sub-topic): fixed those misses (chose the
+  general team page and the "Comprehensive Work Anniversary Gifts" page, and preferred the overview
+  "Understanding Community Fundraising" over a higher-volume listicle). This is the method to build.
+
+Caveats:
+- Cap the candidate pages per pillar (for example top 15 by volume) so the prompt stays small; the hub is
+  always among the high-volume pages.
+- Add a fallback to the head-term or highest-volume page for the ~15% where the model returns nothing
+  usable, so every pillar gets a hub.
+- Pairs with the automated-IA idea (hub-and-spoke plus internal linking) and the oversized-pillar split
+  (split first, then designate a hub per resulting sub-pillar).
