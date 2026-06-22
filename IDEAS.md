@@ -286,3 +286,83 @@ Add guardrails on cost: a maximum keywords-per-run limit and a total monthly key
 accidental upload cannot run up an unexpected DataForSEO bill. Warn and require confirmation when an
 upload exceeds the per-run cap, and track usage against the monthly cap. This pairs naturally with showing
 the estimated SERP cost before the Run step.
+
+## More visual run / progress screen
+
+Source: Nathan, 2026-06-19.
+
+The run-in-progress screen (step 3) is currently a plain info box ("Running... 112s elapsed") and a log
+link. Make it more visually appealing and more informative:
+- A branded progress state: a progress bar or spinner in the palette, a clear elapsed timer, and the
+  stepper showing step 3 as active.
+- Real progress rather than just elapsed seconds. The SERP fetch is the long pole and the engine already
+  logs "collected X of Y SERPs", so a bar driven by that count is the most useful single readout. A stage
+  checklist (embedding, reading SERPs, clustering, naming pages, done) advancing through the run would
+  read well too.
+- Once a fraction of the SERPs are back, project a rough time remaining.
+
+How it would work:
+- Have the engine write progress into `status.json` each poll cycle (it already writes `status.json` at
+  the start and logs the collected count), then have the front-end render it as a bar plus stage list.
+- Replace the single `st.info` with that bar, stage list and timer, styled in the brand palette.
+
+Related:
+- This is the in-progress counterpart to "Visual output: charts and graphs" (which covers the results).
+- Worth pairing with persisting the run id in the URL query params, so a reload (or a front-end redeploy)
+  resumes the progress view instead of dropping the user back to step 1. Today the run continues
+  server-side, but the in-app view is held only in session state, so a refresh loses it.
+
+## Email when a run finishes
+
+Source: Nathan, 2026-06-19.
+
+Let the user add their email at the Run step and get emailed when the run completes, with a link straight
+to the result, so they do not have to keep the tab open or remember to check back. This fits the
+server-side model: the run already survives the tab closing, and an email removes the need to watch it at
+all, which matters most for the long runs that the higher caps now allow.
+
+How it would work:
+- Optional email field on the Run step, stored with the run (in its input or meta on the data branch).
+- On completion, send the email. Either the Action sends it as a final step (it already knows when the
+  run finished and can build the result link) or a small notify step does. Needs an email service and a
+  secret (a transactional email API, or SMTP), added like the existing OpenAI and DataForSEO secrets.
+- Send on failure too, so a failed run is not a silent dead end.
+
+Caveats:
+- Needs an email-sending service and credentials; a simple transactional provider is enough.
+- User emails are personal data. If the repo is public, do not write them in plaintext to the runs
+  branch; keep them out of committed files or store only a short-lived reference.
+- Pairs with "named runs and projects" (the email can use the run's title) and the progress-screen idea.
+
+## Scale to large keyword sets (30k+): resume mode and scalable clustering
+
+Source: Nathan, 2026-06-19.
+
+The SERP side is now resumable and lossless: SERPs are cached as they arrive, a cancelled run still
+saves its cache, and DataForSEO's `id_list` lets already-paid tasks be re-fetched for free within 30
+days. That makes large runs viable in principle, but two ceilings stop a single 30k run today.
+
+1. Collection time vs the runner limit. Collecting 14k on the cheap queue took about 3 hours; 30k is
+   roughly 5 to 7 hours, and a GitHub-hosted job is hard-capped at 6 hours. So 30k probably will not
+   collect inside one job on the cheap queue.
+2. Clustering memory. The pillar step runs one agglomerative clustering over every keyword's embedding,
+   which builds a full pairwise matrix (order n squared). At 30k that is roughly 4 to 7GB, around a
+   standard runner's RAM, so it risks running out of memory. This is independent of the queue and is the
+   harder blocker.
+
+What to build:
+- Resume / chunk mode. Let a run pick up where it left off: collect what fits in a job, cache it, and on
+  the next run fetch the rest. Already-submitted tasks come back free via `id_list` within 30 days, so
+  no re-paying. Either automate the resume, or split a large upload into chunks that each fit a job, with
+  the shared cache stitching them together.
+- Memory-scalable clustering. Replace or augment the single n-squared agglomerative pass for very large
+  sets. Options: reduce dimensions first (UMAP) then cluster with HDBSCAN (the method this repo was named
+  after), use mini-batch or blockwise clustering, or run the clustering step on a larger paid runner with
+  more RAM only when the set is big.
+- A higher DataForSEO priority stays the lever if speed matters more than cost (faster collection, about
+  twice the per-SERP price).
+
+Caveats:
+- Cost scales linearly: about $18 of SERP for 30k on the cheap queue, plus a little OpenAI.
+- The resume flow leans on the cache and `id_list` recovery being solid, so they should be part of the
+  normal path, not just a rescue route.
