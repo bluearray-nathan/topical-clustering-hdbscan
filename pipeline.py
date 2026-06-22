@@ -49,6 +49,11 @@ MIXED_BELOW = 0.6        # if the top page type is below this share, the SERP is
 UBIQUITOUS_DF = 0.25     # domains ranking for this share of a pillar's keywords are dropped (non-discriminating)
 BLEND_ALPHA = 0.65       # weight on semantic vs specific-SERP overlap when forming pages
 PAGE_THRESHOLD = 0.50    # agglomerative distance threshold for the page blend
+PILLAR_CAP = 400         # pillars over this many keywords are split into sub-pillars
+PILLAR_SUBTHRESHOLD = 0.40  # tighter threshold used when splitting an oversized pillar
+KEEP_FLOOR = 100         # a single-keyword page with at least this volume stays its own page
+FOLD_SIM = 0.55          # fold a singleton into the nearest page only if at least this similar
+UNGROUPED = "Ungrouped (review)"
 DFS_BASE = "https://api.dataforseo.com/v3/serp/google/organic"
 
 client = OpenAI()
@@ -376,6 +381,123 @@ def cluster_pages_in_pillar(idx, X, keywords, kw_to_results):
                                    distance_threshold=PAGE_THRESHOLD, n_clusters=None).fit_predict(D)
 
 
+def split_oversized_pillars(pillar_ids, X, cap=PILLAR_CAP, sub_threshold=PILLAR_SUBTHRESHOLD):
+    """Recursively re-cluster any pillar over the size cap, tightening the threshold each level until
+    every pillar is within the cap. A dense head-term core gets broken up as far as needed while sparse
+    pillars are left coarse. Returns relabelled, contiguous pillar ids."""
+    new = np.array(pillar_ids, dtype=int)
+    nxt = [int(new.max()) + 1]
+
+    def recurse(idx, thr):
+        if len(idx) <= cap or thr < 0.15:
+            new[idx] = nxt[0]
+            nxt[0] += 1
+            return
+        sub = cluster(X[idx], thr)
+        groups = {}
+        for j, lab in zip(idx, sub):
+            groups.setdefault(int(lab), []).append(int(j))
+        if len(groups) <= 1:                      # threshold did not separate it; go tighter
+            recurse(idx, round(thr - 0.05, 2))
+            return
+        for g in groups.values():
+            recurse(np.array(g), round(thr - 0.05, 2))
+
+    over = [pid for pid in sorted(set(int(p) for p in pillar_ids)) if int((new == pid).sum()) > cap]
+    for pid in over:
+        recurse(np.where(new == pid)[0], sub_threshold)
+    order = {v: i for i, v in enumerate(sorted(set(int(x) for x in new)))}
+    new = np.array([order[int(x)] for x in new], dtype=int)
+    if over:
+        log(f"split {len(over)} oversized pillar(s) (> {cap} kw), recursing from threshold {sub_threshold}")
+    return new
+
+
+def fold_singletons(df, X, keep_floor=KEEP_FLOOR, fold_sim=FOLD_SIM):
+    """Single-keyword pages: keep high-volume ones, fold relevant ones into the nearest real page,
+    quarantine the rest into an ungrouped bucket (never merged into a real page, never deleted).
+    Edits df columns in place; returns (kept, folded, quarantined)."""
+    pid = df["page_id"].values.copy()
+    counts = pd.Series(pid).value_counts()
+    sizes = pd.Series(pid).map(counts).values
+    multi_ids = sorted(set(int(p) for p in pid[sizes > 1]))
+    if not multi_ids:
+        return 0, 0, 0
+    pos_by_page = {p: np.where(pid == p)[0] for p in multi_ids}
+    cent = np.vstack([X[pos_by_page[p]].mean(0) for p in multi_ids])
+    cent = cent / np.clip(np.linalg.norm(cent, axis=1, keepdims=True), 1e-9, None)
+    meta_cols = ["pillar_id", "pillar", "topic", "topic_id"]
+    pmeta = {p: {c: df[c].values[pos_by_page[p][0]] for c in meta_cols} for p in multi_ids}
+    cols = {c: df[c].values.copy() for c in meta_cols}
+    vol = pd.to_numeric(df["volume"], errors="coerce").fillna(0).values
+    nk = nf = nq = 0
+    for i in np.where(sizes == 1)[0]:
+        if vol[i] >= keep_floor:
+            nk += 1
+            continue
+        with np.errstate(all="ignore"):
+            sims = cent @ X[i]
+        j = int(np.argmax(sims))
+        if sims[j] >= fold_sim:
+            tgt = multi_ids[j]
+            pid[i] = tgt
+            for c in meta_cols:
+                cols[c][i] = pmeta[tgt][c]
+            nf += 1
+        else:
+            pid[i] = -1
+            cols["pillar_id"][i] = -1
+            cols["pillar"][i] = UNGROUPED
+            cols["topic"][i] = UNGROUPED
+            cols["topic_id"][i] = UNGROUPED
+            nq += 1
+    df["page_id"] = pid
+    for c in meta_cols:
+        df[c] = cols[c]
+    log(f"singletons: kept {nk}, folded {nf}, quarantined {nq}")
+    return nk, nf, nq
+
+
+def designate_hub_pages(df, max_candidates=15):
+    """For each pillar, pick the hub (pillar) page the supporting pages link up to. The model chooses
+    from the pillar's top pages, preferring breadth and overview intent; falls back to the highest-volume
+    page. Returns {page_id: 'Pillar page' | 'Supporting'} for real pages."""
+    real = df[df["page_id"] >= 0]
+    sysmsg = ("You are an SEO information architect. Given the pages in one content pillar (each with top "
+              "keywords, total search volume and intent), choose the single PILLAR (hub) page: the broad "
+              "overview page targeting the head term that the others link up to. Prefer breadth and "
+              "overview intent over a narrow sub-topic, even if a narrow page has more volume. "
+              'Reply only as JSON: {"hub_page_id": <id>}.')
+
+    def one(pid):
+        sub = real[real["pillar_id"] == pid]
+        pg = (sub.groupby("page_id").agg(page=("page", "first"), vol=("volume", "sum"),
+              intent=("page_intent", "first")).reset_index().sort_values("vol", ascending=False))
+        ids = [int(x) for x in pg["page_id"]]
+        if len(ids) == 1:
+            return {ids[0]: "Pillar page"}
+        cand = pg.head(max_candidates)
+        candset = {int(x) for x in cand["page_id"]}
+        hub = int(cand.iloc[0]["page_id"])
+        lines = []
+        for _, r in cand.iterrows():
+            top = sub[sub["page_id"] == r["page_id"]].sort_values("volume", ascending=False)["keyword"].head(5).tolist()
+            lines.append(f'id {int(r["page_id"])}: {r["page"]} (vol {int(r["vol"])}, {r["intent"]}; {", ".join(top)})')
+        try:
+            h = int(_chat_json(sysmsg, "Pages:\n" + "\n".join(lines)).get("hub_page_id"))
+            if h in candset:
+                hub = h
+        except Exception:
+            pass
+        return {i: ("Pillar page" if i == hub else "Supporting") for i in ids}
+
+    out = {}
+    with cf.ThreadPoolExecutor(max_workers=12) as ex:
+        for r in cf.as_completed([ex.submit(one, int(p)) for p in sorted(real["pillar_id"].unique())]):
+            out.update(r.result())
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Main
 # --------------------------------------------------------------------------- #
@@ -387,6 +509,14 @@ def main():
     ap.add_argument("--cache", default=".serp_cache.json")
     ap.add_argument("--location", default="United Kingdom")
     ap.add_argument("--run-id", default="local")
+    ap.add_argument("--pillar-cap", type=int, default=PILLAR_CAP)
+    ap.add_argument("--pillar-subthreshold", type=float, default=PILLAR_SUBTHRESHOLD)
+    ap.add_argument("--keep-floor", type=float, default=KEEP_FLOOR)
+    ap.add_argument("--fold-sim", type=float, default=FOLD_SIM)
+    ap.add_argument("--split-oversized", action="store_true",
+                    help="optionally break pillars over --pillar-cap into sub-pillars (off by default)")
+    ap.add_argument("--no-fold", action="store_true")
+    ap.add_argument("--no-hub", action="store_true")
     args = ap.parse_args()
 
     for var in ["OPENAI_API_KEY", "DATAFORSEO_LOGIN", "DATAFORSEO_PASSWORD"]:
@@ -401,6 +531,9 @@ def main():
 
     X = embed(df["keyword"].tolist())
     df["pillar_id"] = cluster(X, args.pillar_threshold)   # pillars (themes)
+    if args.split_oversized:
+        df["pillar_id"] = split_oversized_pillars(df["pillar_id"].values, X,
+                                                  args.pillar_cap, args.pillar_subthreshold)
     pillar_labels = label_groups(df, "pillar_id", "pillar")
     df["pillar"] = df["pillar_id"].map(pillar_labels)
     # Topics: the model groups the pillars into broad editorial sections.
@@ -470,6 +603,13 @@ def main():
     df["page_id"] = page_ids
     log(f"formed {df.page_id.nunique()} pages")
 
+    # Single-keyword pages: keep high-volume ones, fold relevant ones into the nearest page,
+    # quarantine the rest into an ungrouped bucket (never merged into a real page, never deleted).
+    if not args.no_fold:
+        fold_singletons(df, X, args.keep_floor, args.fold_sim)
+        log(f"after folding: {df.loc[df.page_id >= 0, 'page_id'].nunique()} pages, "
+            f"{int((df.page_id < 0).sum())} keywords ungrouped")
+
     # Page-level intent (dominant member intent, else Mixed)
     p_intent = {}
     for pgid, grp in df.groupby("page_id"):
@@ -480,18 +620,30 @@ def main():
     # by intent (a guide versus a comparison page) get clearly distinct names.
     page_names = name_pages(df, p_intent)
     df["page"] = df["page_id"].map(page_names)
-    log(f"named {len(page_names)} pages")
+    df.loc[df["page_id"] < 0, "page"] = UNGROUPED
+    df.loc[df["page_id"] < 0, "page_intent"] = "Mixed"
+    log(f"named {df.loc[df.page_id >= 0, 'page_id'].nunique()} pages")
+
+    # Designate the hub (pillar) page within each pillar; the rest are supporting pages.
+    if not args.no_hub:
+        df["page_role"] = df["page_id"].map(designate_hub_pages(df))
+    else:
+        df["page_role"] = "Supporting"
+    df.loc[df["page_id"] < 0, "page_role"] = "Ungrouped"
+    df["page_role"] = df["page_role"].fillna("Supporting")
+    log(f"{int((df.drop_duplicates('page_id')['page_role'] == 'Pillar page').sum())} pillar pages designated")
 
     # ---- Outputs: Topic > Pillar > Page ----
-    df[["keyword", "volume", "topic", "pillar", "page", "page_intent", "intent", "intent_source"]].rename(
+    df[["keyword", "volume", "topic", "pillar", "page", "page_role", "page_intent", "intent", "intent_source"]].rename(
         columns={"keyword": "Keyword", "volume": "Volume", "topic": "Topic", "pillar": "Pillar",
-                 "page": "Page", "page_intent": "Page intent", "intent": "Keyword intent",
-                 "intent_source": "Intent source"}
+                 "page": "Page", "page_role": "Page role", "page_intent": "Page intent",
+                 "intent": "Keyword intent", "intent_source": "Intent source"}
     ).to_csv(os.path.join(args.outdir, "keyword_mapping.csv"), index=False)
 
     pages = (df.groupby("page_id").agg(
                 Topic=("topic", "first"), Pillar=("pillar", "first"), Page=("page", "first"),
-                Intent=("page_intent", "first"), Keywords=("keyword", "size"), Volume=("volume", "sum"))
+                Role=("page_role", "first"), Intent=("page_intent", "first"),
+                Keywords=("keyword", "size"), Volume=("volume", "sum"))
              .reset_index(drop=True).sort_values(["Topic", "Volume"], ascending=[True, False], na_position="last"))
     pages.to_csv(os.path.join(args.outdir, "page_summary.csv"), index=False)
 
@@ -499,18 +651,19 @@ def main():
         "run_id": args.run_id,
         "finished_at": dt.datetime.utcnow().isoformat() + "Z",
         "n_keywords": int(len(df)),
-        "n_topics": int(df.topic_id.nunique()),
-        "n_pillars": int(df.pillar_id.nunique()),
-        "n_pages": int(df.page_id.nunique()),
+        "n_topics": int(df.loc[df.page_id >= 0, "topic_id"].nunique()),
+        "n_pillars": int(df.loc[df.page_id >= 0, "pillar_id"].nunique()),
+        "n_pages": int(df.loc[df.page_id >= 0, "page_id"].nunique()),
+        "n_ungrouped": int((df.page_id < 0).sum()),
         "intent_from_serp": int((df.intent_source == "serp").sum()),
         "intent_from_text": int((df.intent_source == "text").sum()),
         "serp_cost_usd": round(cost, 4),
         "timed_out": int(timed_out),
         "page_intent_distribution": {k: int(v) for k, v in
-                                     df.drop_duplicates("page_id")["page_intent"].value_counts().items()},
+                                     df[df.page_id >= 0].drop_duplicates("page_id")["page_intent"].value_counts().items()},
     }
     result = {"meta": meta, "keywords": df[["keyword", "volume", "topic", "pillar", "page",
-              "page_intent", "intent_source"]].to_dict(orient="records")}
+              "page_role", "page_intent", "intent_source"]].to_dict(orient="records")}
     with open(os.path.join(args.outdir, "result.json"), "w") as f:
         json.dump(result, f)
     with open(os.path.join(args.outdir, "status.json"), "w") as f:
