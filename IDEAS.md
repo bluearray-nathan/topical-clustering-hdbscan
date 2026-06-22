@@ -403,3 +403,33 @@ Caveats:
 - The source-level fix is density clustering (HDBSCAN, the repo's namesake): it labels noise during
   clustering, giving the quarantine bucket for free rather than as a bolt-on. Pairs with the
   "scale to large keyword sets" idea.
+
+## Split oversized pillars (cap the mega-pillar)
+
+Source: Nathan, 2026-06-22.
+
+A broad head term can pull a large share of the set into one pillar: on the 14k crowdfunding test
+"Crowdfunding Essentials" held 219 pages / 2,563 keywords (15% of the set), the same pattern as the
+"comprehensive" mega-pillar on the car-insurance set. Keyword Insights has it worse (its "crowd funding"
+hub holds 1,415 clusters), but it is still a flaw. The 0.45 pillar threshold is loose enough that
+everything semantically near the head term lands together.
+
+Two ways to address it:
+- Global: a tighter pillar threshold splits the broad terms, but it also fragments every other pillar and
+  raises the total pillar count, so it is a blunt lever.
+- Targeted: keep the 0.45 default, then re-cluster only the pillars above a size cap at a tighter
+  threshold, so the mega-pillar splits into sub-pillars while the rest of the structure is untouched.
+  This is the cleaner fix.
+
+How it would work:
+- After pillar clustering, flag any pillar over a cap (for example > 300 keywords or > 40 pages).
+- Re-cluster each flagged pillar's members at a tighter threshold (recursively until under the cap),
+  relabel the resulting sub-pillars, and keep them under the same topic.
+- Expose the cap and the sub-threshold as advanced settings.
+
+Caveats:
+- The right cap and sub-threshold need validating per set, so expose them rather than hard-coding.
+- Some breadth is genuine, so the split should produce named, meaningful sub-pillars rather than arbitrary
+  fragments; label them after splitting.
+- Relates to the scalable-clustering idea: HDBSCAN varies density per region instead of using one global
+  threshold, which would handle this more naturally.
