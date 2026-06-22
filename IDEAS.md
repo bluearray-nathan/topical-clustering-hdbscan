@@ -366,3 +366,40 @@ Caveats:
 - Cost scales linearly: about $18 of SERP for 30k on the cheap queue, plus a little OpenAI.
 - The resume flow leans on the cache and `id_list` recovery being solid, so they should be part of the
   normal path, not just a rescue route.
+
+## Singleton handling: keep, fold, or quarantine (relevance-gated)
+
+Source: Nathan, 2026-06-22.
+
+On a large long-tail set the page step leaves many single-keyword pages (1,946 of 3,411 pages, 57%, on
+the 14,183-keyword crowdfunding test). Most are zero or near-zero volume long-tail, a few are genuine
+niche queries, and some are outright noise (typos, URLs, off-topic headlines). The fix is a
+relevance-gated three-way split rather than blunt merging:
+
+1. Keep: a singleton whose volume is above a small floor stays as its own page (a real standalone term).
+2. Fold: a singleton that is semantically close to an existing page (cosine to the nearest page centroid
+   above a threshold) is folded into that page. The closeness gate is what stops unrelated keywords
+   polluting a good page.
+3. Quarantine: a singleton that is not close to any page goes into an "ungrouped / for review" bucket,
+   never merged into a page and never auto-deleted. The user decides whether to keep or bin those.
+
+Validated on the 14k set (volume floor 100, similarity 0.55): keep 2, fold 1,922, quarantine 22, taking
+pages from 3,411 to 1,467 with every keyword still accounted for. Folds landed correctly (for example
+"crowd funding sec" into "Crowdfunding Regulations Explained"), and quarantine caught exactly the noise
+(a stray "Keyword" header, an immigration query, news headlines, a TV show). Keyword Insights produced
+5,408 clusters on the same set, so the tool is more consolidated even before folding, and much more after.
+
+How it would work:
+- A post-clustering step after pages are formed. Reuse the keyword embeddings already computed, build a
+  centroid per multi-keyword page, score each singleton against the nearest page, then apply the volume
+  floor and similarity threshold.
+- Expose the volume floor and similarity threshold as advanced settings, and add an "ungrouped / review"
+  section to the output and the app so quarantined keywords stay visible.
+
+Caveats:
+- "Irrelevant vs niche-but-relevant" is a judgement and the threshold is a proxy. Mistyped but relevant
+  queries (for example "colection pot") can score low and land in quarantine, which is why it is a review
+  list, not auto-delete.
+- The source-level fix is density clustering (HDBSCAN, the repo's namesake): it labels noise during
+  clustering, giving the quarantine bucket for free rather than as a bolt-on. Pairs with the
+  "scale to large keyword sets" idea.
