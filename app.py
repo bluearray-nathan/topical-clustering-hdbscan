@@ -206,8 +206,11 @@ def render_results(run_id):
         st.warning("No page summary found for this run.")
         return
 
+    has_role = "Role" in page_summary.columns
+    real = page_summary[page_summary["Role"] != "Ungrouped"] if has_role else page_summary
+
     st.markdown("### Topic > Pillar > Page")
-    for topic, tg in sorted(page_summary.groupby("Topic"),
+    for topic, tg in sorted(real.groupby("Topic"),
                             key=lambda kv: -kv[1]["Volume"].sum(min_count=1)
                             if kv[1]["Volume"].notna().any() else 0):
         head = (f"{topic}  ·  {tg['Pillar'].nunique()} pillars · "
@@ -217,9 +220,22 @@ def render_results(run_id):
                                      key=lambda kv: -kv[1]["Volume"].sum(min_count=1)
                                      if kv[1]["Volume"].notna().any() else 0):
                 st.markdown(f"**{pillar}**  ·  {len(pg)} pages · {vol(pg['Volume'].sum(min_count=1))} vol")
-                show = pg[["Page", "Intent", "Keywords", "Volume"]].sort_values(
-                    "Volume", ascending=False, na_position="last")
+                if has_role:                       # hub page first, flagged
+                    pg = pg.assign(_o=(pg["Role"] != "Pillar page").astype(int))
+                    show = pg.sort_values(["_o", "Volume"], ascending=[True, False], na_position="last")[
+                        ["Role", "Page", "Intent", "Keywords", "Volume"]]
+                else:
+                    show = pg[["Page", "Intent", "Keywords", "Volume"]].sort_values(
+                        "Volume", ascending=False, na_position="last")
                 st.dataframe(show, hide_index=True, use_container_width=True)
+
+    if "Page role" in keyword_mapping.columns:
+        ung = keyword_mapping[keyword_mapping["Page role"] == "Ungrouped"]
+        if len(ung):
+            with st.expander(f"Ungrouped / for review  ·  {len(ung)} keywords"):
+                st.caption("Low-relevance or noisy keywords held out of the pages. Review and keep or discard.")
+                cols = [c for c in ["Keyword", "Volume", "Keyword intent"] if c in ung.columns]
+                st.dataframe(ung[cols], hide_index=True, use_container_width=True, height=300)
 
     with st.expander("Full keyword mapping"):
         st.dataframe(keyword_mapping, hide_index=True, use_container_width=True, height=400)

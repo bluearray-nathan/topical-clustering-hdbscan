@@ -54,6 +54,7 @@ PILLAR_SUBTHRESHOLD = 0.40  # tighter threshold used when splitting an oversized
 KEEP_FLOOR = 100         # a single-keyword page with at least this volume stays its own page
 FOLD_SIM = 0.55          # fold a singleton into the nearest page only if at least this similar
 UNGROUPED = "Ungrouped (review)"
+TOPIC_CAP = 10           # consolidate pillar sections into at most this many broad topics
 DFS_BASE = "https://api.dataforseo.com/v3/serp/google/organic"
 
 client = OpenAI()
@@ -125,26 +126,47 @@ def label_groups(df, col, kind="topic"):
 
 
 def group_pillars_into_topics(pillar_labels):
-    """Ask the model to group the pillar labels into a small set of broad editorial sections.
-    Returns {pillar_label: topic_name}."""
+    """Group pillars into a small set of broad topics. The model first assigns each pillar a section;
+    if that yields more than TOPIC_CAP sections, a consolidation pass merges them into at most
+    TOPIC_CAP broad topics. Returns {pillar_label: topic_name}."""
     if len(pillar_labels) <= 1:
         return {p: p for p in pillar_labels}
-    sysmsg = ("You are an SEO information architect. Group these content pillars into a small set of "
-              "broad topical sections, aiming for 5 to 8. Every pillar goes in exactly one section. "
+    sysmsg = ("You are an SEO information architect. Group these content pillars into broad topical "
+              "sections. Every pillar goes in exactly one section. "
               'Reply only as JSON: {"results":[{"pillar":"<pillar label>","section":"<section name>"}]}.')
-    out = {}
+    sec = {}
     try:
         data = _chat_json(sysmsg, "Pillars:\n" + "\n".join(f"- {p}" for p in pillar_labels))
         for r in data.get("results", []):
             p = str(r.get("pillar", "")).strip()
             s = str(r.get("section", "")).strip()
             if p:
-                out[p] = s or "Other"
+                sec[p] = s or "Other"
     except Exception:
         pass
     for p in pillar_labels:
-        out.setdefault(p, "Other")
-    return out
+        sec.setdefault(p, "Other")
+
+    sections = sorted(set(sec.values()))
+    if len(sections) <= TOPIC_CAP:
+        return sec
+    # too many sections: consolidate them into a few broad topics
+    cons = {}
+    sys2 = (f"You are an SEO information architect. Merge these content sections into AT MOST {TOPIC_CAP} "
+            "broad topics. Every section maps to exactly one topic. "
+            'Reply only as JSON: {"results":[{"section":"<section name>","topic":"<topic name>"}]}.')
+    try:
+        data = _chat_json(sys2, "Sections:\n" + "\n".join(f"- {s}" for s in sections))
+        for r in data.get("results", []):
+            s = str(r.get("section", "")).strip()
+            t = str(r.get("topic", "")).strip()
+            if s:
+                cons[s] = t or s
+    except Exception:
+        pass
+    for s in sections:
+        cons.setdefault(s, s)
+    return {p: cons.get(sec[p], sec[p]) for p in pillar_labels}
 
 
 def name_pages(df, page_intent):
@@ -536,6 +558,9 @@ def main():
                                                   args.pillar_cap, args.pillar_subthreshold)
     pillar_labels = label_groups(df, "pillar_id", "pillar")
     df["pillar"] = df["pillar_id"].map(pillar_labels)
+    # Merge pillars the labeller named identically (same theme) so each pillar is one group with one hub.
+    _name_id = {}
+    df["pillar_id"] = df["pillar"].map(lambda nm: _name_id.setdefault(nm, len(_name_id)))
     # Topics: the model groups the pillars into broad editorial sections.
     topic_of_label = group_pillars_into_topics(sorted(set(pillar_labels.values())))
     df["topic"] = df["pillar"].map(topic_of_label).fillna("Other")
