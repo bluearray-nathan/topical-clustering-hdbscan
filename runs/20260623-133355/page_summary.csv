@@ -1,0 +1,572 @@
+Topic,Pillar,Page,Role,Intent,Keywords,Volume
+Compliance and Governance,PCI Compliance Solutions,PCI Compliance Solutions Overview,Pillar page,Transactional,4,23770
+Compliance and Governance,FedRAMP Overview,Understanding FedRAMP Compliance,Pillar page,Informational,5,22510
+Compliance and Governance,CMMC Compliance Solutions,CMMC Compliance Software Overview,Pillar page,Mixed,2,10220
+Compliance and Governance,Cybersecurity Compliance Solutions,Understanding SOC 2 Compliance,Pillar page,Mixed,2,8580
+Compliance and Governance,FISMA Compliance,Understanding FISMA Compliance,Pillar page,Informational,2,7900
+Compliance and Governance,SCAP Compliance Framework,Understanding SCAP Compliance,Pillar page,Informational,3,5810
+Compliance and Governance,NIST Cybersecurity Framework,Understanding NIST Frameworks,Pillar page,Informational,3,5200
+Compliance and Governance,PCI Compliance Solutions,Understanding PCI DSS Compliance,Supporting,Mixed,2,4880
+Compliance and Governance,New York Cyber Regulations,NYDFS Quick Access,Supporting,Navigational,1,4400
+Compliance and Governance,AI Risk Management Solutions,AI Risk Management Overview,Pillar page,Mixed,2,3280
+Compliance and Governance,Critical Security Controls,Overview of Critical Security Controls,Pillar page,Informational,3,2930
+Compliance and Governance,AI Compliance Framework,AI Compliance Solutions Overview,Pillar page,Commercial,1,2400
+Compliance and Governance,New York Cyber Regulations,New York DFS Overview,Pillar page,Navigational,1,1600
+Compliance and Governance,AI Risk Management Solutions,Top Risk Intelligence Solutions,Supporting,Commercial,3,1260
+Compliance and Governance,Cybersecurity Compliance Solutions,Overview of Cybersecurity Compliance Standards,Supporting,Informational,5,960
+Compliance and Governance,Adversarial AI,Understanding Adversarial AI,Pillar page,Informational,2,730
+Compliance and Governance,CIS Security Framework,Understanding The CIS Framework,Pillar page,Informational,1,720
+Compliance and Governance,AI Risk Management Solutions,Best Risk Management Platforms,Supporting,Commercial,1,590
+Compliance and Governance,Cybersecurity Compliance Solutions,Guide to NERC CIP Compliance,Supporting,Informational,1,480
+Compliance and Governance,NIST Cybersecurity Framework,Overview of NIST Cybersecurity Framework,Supporting,Informational,1,480
+Compliance and Governance,FedRAMP Overview,Exploring FedRAMP Levels,Supporting,Informational,1,390
+Compliance and Governance,New York Cyber Regulations,Cybersecurity Regulations Guide,Supporting,Informational,1,320
+Compliance and Governance,Critical Security Controls,Essential Network Security Controls,Supporting,Informational,1,210
+Compliance and Governance,Regulatory Framework Overview,Understanding Regulatory Frameworks,Pillar page,Informational,1,210
+Compliance and Governance,AI Compliance Framework,Understanding AI Regulatory Compliance,Supporting,Informational,1,170
+Compliance and Governance,Service Organization Control,Understanding Service Organization Control,Pillar page,Informational,1,170
+Compliance and Governance,Critical Security Controls,Understanding GDPR Security Controls,Supporting,Informational,1,110
+Cybersecurity Practices,RASP Overview,Top RASP Solutions,Pillar page,Commercial,1,27100
+Cybersecurity Practices,Cloud Security Solutions,Top Cloud Security Solutions,Pillar page,Commercial,6,23600
+Cybersecurity Practices,CI/CD Fundamentals,What Is CI/CD Explained,Pillar page,Informational,3,19790
+Cybersecurity Practices,Cybersecurity Innovations,AI Applications in Cybersecurity,Pillar page,Mixed,2,18690
+Cybersecurity Practices,WAF Security Solutions,Understanding Web Application Firewalls,Pillar page,Informational,3,17400
+Cybersecurity Practices,Data Loss Prevention,Understanding DLP Concepts,Supporting,Mixed,2,14000
+Cybersecurity Practices,Application Security Solutions,Understanding Web Application Firewalls,Pillar page,Commercial,5,12820
+Cybersecurity Practices,DevSecOps Overview,Defining DevSecOps Services,Pillar page,Informational,3,11260
+Cybersecurity Practices,CASB Solutions,Exploring CASB Solutions and Vendors,Pillar page,Commercial,8,11240
+Cybersecurity Practices,Data Security Overview,Overview of Data Security,Pillar page,Informational,1,9900
+Cybersecurity Practices,CI/CD Fundamentals,Understanding CI/CD Concepts,Supporting,Informational,1,9900
+Cybersecurity Practices,Endpoint Detection Solutions,Effective Endpoint Detection Strategies,Pillar page,Commercial,4,9660
+Cybersecurity Practices,Infrastructure as Code,Understanding Infrastructure As Code,Pillar page,Informational,6,9570
+Cybersecurity Practices,Data Loss Prevention,Data Loss Prevention Explained,Pillar page,Informational,3,9440
+Cybersecurity Practices,Cloud Security Posture Management,CSPM Tools and Vendors Overview,Pillar page,Commercial,5,8770
+Cybersecurity Practices,Application Security Solutions,Comprehensive Application Security Solutions,Supporting,Commercial,7,8600
+Cybersecurity Practices,CNAPP Overview,Understanding CNAPP Solutions,Pillar page,Commercial,5,8510
+Cybersecurity Practices,Data Integrity Overview,Understanding Data Integrity,Pillar page,Informational,4,7590
+Cybersecurity Practices,API Security Solutions,Essential API Testing Tools,Pillar page,Mixed,2,6300
+Cybersecurity Practices,API Security Solutions,Top API Security Tools,Supporting,Commercial,3,6280
+Cybersecurity Practices,Container Security Essentials,Top Container Security Solutions,Pillar page,Commercial,7,6130
+Cybersecurity Practices,HITL Overview,Understanding HITL Meaning,Pillar page,Informational,3,6050
+Cybersecurity Practices,Cloud Security Solutions,Securing Cloud Migration Processes,Supporting,Mixed,2,5880
+Cybersecurity Practices,WormGPT Overview,What Is WormGPT?,Pillar page,Informational,6,5820
+Cybersecurity Practices,DAST Tools Overview,Understanding DAST Solutions,Pillar page,Commercial,1,5400
+Cybersecurity Practices,Cloud Security Strategies,Cloud Security Best Practices Guide,Pillar page,Informational,3,5110
+Cybersecurity Practices,Cloud Security Solutions,What Is Cloud Security Posture Management?,Supporting,Commercial,4,5070
+Cybersecurity Practices,Application Security Solutions,Web Application Security Assessment Guide,Supporting,Mixed,7,5040
+Cybersecurity Practices,Security in Technology,IoT Security Best Practices,Pillar page,Commercial,1,4400
+Cybersecurity Practices,Cloud Security Solutions,Essential Cloud Security Tools,Supporting,Commercial,2,3900
+Cybersecurity Practices,Cloud Security Strategies,Top AWS Security Services,Supporting,Commercial,3,3870
+Cybersecurity Practices,Cloud Security Posture Management,Understanding CWPP Security Solutions,Supporting,Informational,3,3860
+Cybersecurity Practices,DAST Tools Overview,Best DAST Tools Comparison,Supporting,Commercial,6,3850
+Cybersecurity Practices,Sandboxing in Cybersecurity,Understanding Sandboxing in Cybersecurity,Pillar page,Informational,5,3810
+Cybersecurity Practices,Cloud Security Solutions,Exploring Cloud Native Security,Supporting,Commercial,7,3780
+Cybersecurity Practices,CASB Solutions,Understanding Cloud Access Security Brokers,Supporting,Commercial,5,3570
+Cybersecurity Practices,Secure Access Service Edge,Understanding Secure Access Service Edge,Pillar page,Commercial,2,3380
+Cybersecurity Practices,Operational Technology Overview,Understanding Operational Technology,Pillar page,Informational,3,3200
+Cybersecurity Practices,Data Encryption Overview,Understanding Data Encryption Meaning,Supporting,Mixed,2,3010
+Cybersecurity Practices,Human-in-the-Loop Overview,Understanding Human In The Loop,Pillar page,Informational,2,3010
+Cybersecurity Practices,DevSecOps Overview,Understanding DevSecOps Concepts,Supporting,Informational,2,2900
+Cybersecurity Practices,Kubernetes Security Solutions,Kubernetes Security Solutions Overview,Pillar page,Mixed,7,2810
+Cybersecurity Practices,Application Security Solutions,Application Security Testing Overview,Supporting,Mixed,2,2780
+Cybersecurity Practices,Cloud Security Solutions,Cloud Workload Protection Explained,Supporting,Mixed,6,2770
+Cybersecurity Practices,Data Loss Prevention,Top DLP Security Solutions,Supporting,Commercial,6,2720
+Cybersecurity Practices,IoT Security Solutions,Understanding IoT Security Basics,Pillar page,Informational,4,2660
+Cybersecurity Practices,Data Masking Overview,Benefits and Examples of Data Masking,Pillar page,Informational,4,2610
+Cybersecurity Practices,Application Security Testing,Understanding Dynamic Application Security Testing,Pillar page,Commercial,3,2510
+Cybersecurity Practices,Data Security Overview,Understanding Data Security Basics,Supporting,Informational,1,2400
+Cybersecurity Practices,DevSecOps Overview,What Is DevSecOps?,Supporting,Informational,1,2400
+Cybersecurity Practices,Cloud Security Strategies,AWS vs Azure Cloud Security,Supporting,Informational,3,2390
+Cybersecurity Practices,DAST Tools Overview,Top SAST Tools Overview,Supporting,Commercial,2,1920
+Cybersecurity Practices,CIEM Overview,Understanding CIEM Concepts,Pillar page,Informational,1,1900
+Cybersecurity Practices,Data Encryption Overview,What Is Data Encryption?,Pillar page,Informational,1,1900
+Cybersecurity Practices,Continuous Integration Overview,Understanding Continuous Integration,Pillar page,Informational,1,1900
+Cybersecurity Practices,Data Loss Prevention,Overview of Data Leakage Protection,Supporting,Commercial,3,1630
+Cybersecurity Practices,Cloud Security Solutions,Introduction to Cloud Security,Supporting,Informational,1,1600
+Cybersecurity Practices,API Security Solutions,Understanding App Security,Supporting,Informational,1,1600
+Cybersecurity Practices,Life Cycle Development,Understanding Life Cycle Development,Pillar page,Informational,1,1600
+Cybersecurity Practices,Machine Learning in Cybersecurity,Machine Learning in Cybersecurity,Pillar page,Informational,5,1600
+Cybersecurity Practices,Cloud Security Solutions,Cloud Infrastructure Management Basics,Supporting,Mixed,2,1590
+Cybersecurity Practices,Infrastructure as Code,IAC Meaning and Security Insights,Supporting,Informational,3,1490
+Cybersecurity Practices,Cloud Security Solutions,Navigating Cloud Compliance Challenges,Supporting,Informational,2,1440
+Cybersecurity Practices,WAF Security Solutions,WAF Security Solutions Overview,Supporting,Commercial,2,1410
+Cybersecurity Practices,Application Security Testing,Top Static Application Security Tools,Supporting,Commercial,2,1390
+Cybersecurity Practices,Cloud Security Solutions,Cloud Vulnerability Management Insights,Supporting,Mixed,7,1380
+Cybersecurity Practices,Shift Left Security,Understanding Shift Left Security,Pillar page,Informational,3,1350
+Cybersecurity Practices,Cloud Security Responsibility,Understanding Shared Responsibility Model,Pillar page,Informational,1,1300
+Cybersecurity Practices,RASP Overview,Essential RASP Tools Guide,Supporting,Informational,1,1300
+Cybersecurity Practices,Cloud Security Solutions,Cloud Security and Compliance Overview,Supporting,Informational,3,1250
+Cybersecurity Practices,Cloud Security Solutions,Understanding Google Cloud Security,Supporting,Informational,4,1220
+Cybersecurity Practices,Cybersecurity Innovations,Indicators of Compromise in Cybersecurity,Supporting,Informational,3,1210
+Cybersecurity Practices,Container Security Essentials,Best Container Scanning Tools,Supporting,Commercial,2,1070
+Cybersecurity Practices,Cloud Security Solutions,Cloud Detection and Response Explained,Supporting,Informational,3,1040
+Cybersecurity Practices,Security in Technology,IAM Security Solutions Overview,Supporting,Commercial,1,1000
+Cybersecurity Practices,CNAPP Overview,What Is CNAPP?,Supporting,Informational,1,1000
+Cybersecurity Practices,File Integrity Monitoring,Top File Integrity Monitoring Solutions,Pillar page,Commercial,1,1000
+Cybersecurity Practices,CaaS Security Insights,Understanding CAASM Concepts,Pillar page,Mixed,4,990
+Cybersecurity Practices,Continuous Integration Overview,CI vs CD Explained,Supporting,Informational,2,980
+Cybersecurity Practices,Cloud Security Solutions,Importance of Cloud Security Monitoring,Supporting,Commercial,1,880
+Cybersecurity Practices,DevSecOps Overview,Best Practices for DevSecOps,Supporting,Informational,1,880
+Cybersecurity Practices,Container Security Essentials,What Is Container Security?,Supporting,Informational,1,880
+Cybersecurity Practices,API Security Solutions,API Security Explained,Supporting,Informational,2,760
+Cybersecurity Practices,Cloud Security Solutions,Key Cloud Security Standards,Supporting,Informational,1,720
+Cybersecurity Practices,Cloud Security Solutions,Identifying Cloud Security Risks,Supporting,Informational,1,720
+Cybersecurity Practices,Container Security Essentials,Understanding Container Runtime Security,Supporting,Informational,1,720
+Cybersecurity Practices,Infrastructure as Code,Top IAC Tools Overview,Supporting,Commercial,1,720
+Cybersecurity Practices,SaaS Solutions,Understanding SocaaS Solutions,Pillar page,Commercial,1,720
+Cybersecurity Practices,RASP Overview,Understanding RASP Technology,Supporting,Informational,1,720
+Cybersecurity Practices,Cloud Security Solutions,Cloud IAM and Risk Management,Supporting,Mixed,2,680
+Cybersecurity Practices,Cloud Security Responsibility,Cloud Security Shared Responsibility Model,Supporting,Informational,3,580
+Cybersecurity Practices,KSPM Overview,Understanding KSPM Basics,Pillar page,Mixed,2,530
+Cybersecurity Practices,Runtime Application Security,Runtime Application Security Solutions,Pillar page,Commercial,3,530
+Cybersecurity Practices,Data Masking Overview,Understanding Data Masking Types,Supporting,Informational,2,530
+Cybersecurity Practices,Application Security Solutions,Common Web Application Vulnerabilities,Supporting,Informational,2,520
+Cybersecurity Practices,Cloud Security Solutions,Cloud Security Fundamentals Guide,Supporting,Informational,3,480
+Cybersecurity Practices,API Security Solutions,Overview of API Security,Supporting,Informational,1,480
+Cybersecurity Practices,Container Security Essentials,Docker Container Security Overview,Supporting,Informational,1,480
+Cybersecurity Practices,Security in Technology,Understanding AI Security Vulnerabilities,Supporting,Informational,3,480
+Cybersecurity Practices,CIEM Overview,What Is CIEM Explained,Supporting,Informational,1,480
+Cybersecurity Practices,EAP Cybersecurity Overview,Understanding EAP Cybersecurity,Pillar page,Informational,6,470
+Cybersecurity Practices,Cyber-Physical Systems,Understanding Cyber Physical Systems,Pillar page,Informational,3,400
+Cybersecurity Practices,Cloud Security Solutions,Defining Cloud Security Concepts,Supporting,Informational,1,390
+Cybersecurity Practices,Application Security Solutions,Application Security Monitoring Explained,Supporting,Commercial,1,390
+Cybersecurity Practices,Endpoint Detection Solutions,Comprehensive Endpoint Solutions,Supporting,Commercial,1,390
+Cybersecurity Practices,CNAPP Overview,Top CNAPP Vendors,Supporting,Commercial,1,390
+Cybersecurity Practices,CIEM Overview,CIEM Security Overview,Supporting,Informational,1,390
+Cybersecurity Practices,Infrastructure as Code,Guide to IAC Scanning Techniques,Supporting,Informational,1,390
+Cybersecurity Practices,Continuous Integration Overview,Advantages of Continuous Integration,Supporting,Informational,1,390
+Cybersecurity Practices,Cloud Security Posture Management,CSPM vs CWPP Comparison Guide,Supporting,Informational,2,380
+Cybersecurity Practices,Cybersecurity Innovations,Understanding NIST Cybersecurity Framework,Supporting,Informational,1,320
+Cybersecurity Practices,Cybersecurity Innovations,API Security Best Practices,Supporting,Informational,1,320
+Cybersecurity Practices,Application Security Solutions,Top Web Application Scanners,Supporting,Commercial,1,320
+Cybersecurity Practices,Kubernetes Security Solutions,Understanding Kubernetes Security Posture Management,Supporting,Informational,1,320
+Cybersecurity Practices,RASP Overview,RASP Security Overview,Supporting,Commercial,1,320
+Cybersecurity Practices,Cloud Security Solutions,Managing Cloud Attack Surfaces,Supporting,Mixed,2,300
+Cybersecurity Practices,24/7 Cybersecurity Services,24/7 Cybersecurity Monitoring Services,Pillar page,Transactional,4,260
+Cybersecurity Practices,Cloud Security Posture Management,CSPM for Cloud Security Explained,Supporting,Commercial,2,250
+Cybersecurity Practices,CaaS Security Insights,CAASM Security Insights,Supporting,Mixed,4,250
+Cybersecurity Practices,Cybersecurity Innovations,User and Entity Behavior Analytics Overview,Supporting,Informational,2,230
+Cybersecurity Practices,Cloud Security Solutions,Cloud Patch Management Solutions,Supporting,Transactional,1,210
+Cybersecurity Practices,Secure Access Service Edge,SASE Network Security Overview,Supporting,Commercial,1,210
+Cybersecurity Practices,Cybersecurity Innovations,CIS in Cybersecurity Explained,Supporting,Informational,1,170
+Cybersecurity Practices,Cloud Security Solutions,Cloud Security for AWS Users,Supporting,Commercial,1,170
+Cybersecurity Practices,Data Loss Prevention,Meaning of Data Leakage,Supporting,Informational,1,170
+Cybersecurity Practices,Secure Access Service Edge,Exploring Secure Access Edge Services,Supporting,Commercial,1,170
+Cybersecurity Practices,CaaS Security Insights,Top CAASM Vendors,Supporting,Commercial,1,170
+Cybersecurity Practices,Machine Learning in Cybersecurity,Deep Learning for Security,Supporting,Informational,3,170
+Cybersecurity Practices,Cloud Security Vendors,Top CTEM Vendors Overview,Pillar page,Commercial,1,170
+Cybersecurity Practices,24/7 Cybersecurity Services,Comprehensive 24/7 IT Management,Supporting,Transactional,1,170
+Cybersecurity Practices,WAF Security Solutions,RASP vs WAF Comparison Guide,Supporting,Informational,1,140
+Cybersecurity Practices,CIEM Overview,Top CIEM Solutions Available,Supporting,Commercial,1,140
+Cybersecurity Practices,Cloud Security Vendors,Leading CIEM Vendors Comparison,Supporting,Commercial,1,140
+Cybersecurity Practices,Cloud Misconfiguration Risks,Understanding Cloud Misconfigurations,Pillar page,Informational,3,140
+Cybersecurity Practices,Cybersecurity Innovations,Business Application Security Solutions,Supporting,Commercial,1,110
+Cybersecurity Practices,Operational Technology Overview,Best OT Software Solutions,Supporting,Commercial,1,110
+Cybersecurity Practices,Data Masking Overview,Data Masking Under GDPR Compliance,Supporting,Informational,1,110
+Cybersecurity Practices,OT Network Overview,Understanding OT Networks,Pillar page,Informational,1,110
+Cybersecurity Practices,WormGPT Overview,Understanding WormGPT on Darknet,Supporting,Informational,1,110
+Cybersecurity Practices,Cloud Security Solutions,Cloud Native Runtime Security Overview,Supporting,Informational,3,100
+Cybersecurity Services,Managed Security Solutions,Expert Managed IT Services,Pillar page,Commercial,4,54000
+Cybersecurity Services,SIEM Overview,Understanding SIEM Meaning,Pillar page,Informational,13,33460
+Cybersecurity Services,Managed Security Solutions,Comprehensive Cybersecurity Services,Supporting,Commercial,5,24080
+Cybersecurity Services,EDR Security Solutions,Understanding EDR Products,Pillar page,Commercial,3,20530
+Cybersecurity Services,MDR Cybersecurity Solutions,MDR Definition and Meaning,Pillar page,Informational,4,19490
+Cybersecurity Services,Managed Security Solutions,Top Managed Security Services,Supporting,Commercial,9,17860
+Cybersecurity Services,SIEM Overview,Top SIEM Solutions Available,Supporting,Commercial,31,16680
+Cybersecurity Services,Intrusion Detection Systems,Intrusion Detection And Prevention Overview,Pillar page,Mixed,7,16390
+Cybersecurity Services,Network Security Solutions,Understanding Network Security Concepts,Pillar page,Informational,3,15030
+Cybersecurity Services,MSSP Overview,Understanding MSSP Meaning,Pillar page,Informational,5,15020
+Cybersecurity Services,XDR Cybersecurity Solutions,Understanding XDR Solutions,Pillar page,Commercial,14,10640
+Cybersecurity Services,Managed Detection and Response,Comprehensive Managed Detection Services,Pillar page,Commercial,24,9780
+Cybersecurity Services,SIEM Overview,What Is SIEM Technology?,Supporting,Informational,14,9580
+Cybersecurity Services,SIEM Overview,Popular SIEM Tools Explained,Supporting,Informational,10,9410
+Cybersecurity Services,SIEM Overview,Overview of Security Information Management,Supporting,Informational,15,8460
+Cybersecurity Services,MDR Cybersecurity Solutions,Top MDR Service Providers,Supporting,Commercial,20,6810
+Cybersecurity Services,IDPS Overview,Understanding IDPS Systems,Pillar page,Mixed,4,6110
+Cybersecurity Services,SIEM Overview,Security Information Management Systems,Supporting,Commercial,13,5430
+Cybersecurity Services,SEIM Solutions,Understanding SEIM Technology,Pillar page,Informational,1,4400
+Cybersecurity Services,Network Scanning Solutions,Top Network Scanning Tools,Pillar page,Commercial,3,4380
+Cybersecurity Services,EDR Security Solutions,Top EDR Security Solutions,Supporting,Commercial,2,4300
+Cybersecurity Services,MDR Cybersecurity Solutions,MDR Security Services Overview,Supporting,Mixed,13,4250
+Cybersecurity Services,SOC as a Service,Exploring Managed SOC Services,Pillar page,Commercial,6,4130
+Cybersecurity Services,SIEM Overview,SIEM in Cybersecurity Context,Supporting,Mixed,8,3630
+Cybersecurity Services,SOAR in Cybersecurity,SOAR Security Tools Overview,Pillar page,Mixed,7,3490
+Cybersecurity Services,Network Security Solutions,Cloud Network Security Solutions,Supporting,Commercial,2,3490
+Cybersecurity Services,XDR Cybersecurity Solutions,XDR in Cybersecurity Overview,Supporting,Commercial,13,3460
+Cybersecurity Services,MDR Cybersecurity Solutions,Understanding MDR Concepts,Supporting,Informational,3,3110
+Cybersecurity Services,SOC as a Service,Understanding SOC as a Service,Supporting,Commercial,6,2900
+Cybersecurity Services,SOAR in Cybersecurity,SIEM vs SOAR Explained,Supporting,Informational,5,2820
+Cybersecurity Services,XDR Cybersecurity Solutions,XDR vs EDR Comparison,Supporting,Informational,2,2600
+Cybersecurity Services,Managed Security Solutions,Affordable Security as a Service,Supporting,Transactional,3,2450
+Cybersecurity Services,SIEM Overview,Cloud-Based SIEM Solutions,Supporting,Commercial,6,2350
+Cybersecurity Services,Managed Detection and Response,Network Detection and Response Explained,Supporting,Commercial,4,2340
+Cybersecurity Services,ITDR Solutions,Top ITDR Security Solutions,Pillar page,Commercial,3,2330
+Cybersecurity Services,CTEM Cybersecurity Solutions,Top CTEM Solutions Overview,Pillar page,Mixed,7,2260
+Cybersecurity Services,XDR Cybersecurity Solutions,What Is XDR Explained,Supporting,Informational,5,2240
+Cybersecurity Services,SIEM Overview,SIEM Management Services Explained,Supporting,Commercial,7,2230
+Cybersecurity Services,Log Management Solutions,Top Log Management Solutions,Pillar page,Commercial,3,2180
+Cybersecurity Services,SIEM Overview,Managed SIEM Services Overview,Supporting,Commercial,4,2130
+Cybersecurity Services,Managed Detection and Response,Overview of Extended Detection Solutions,Supporting,Commercial,3,2030
+Cybersecurity Services,MSSP Overview,Choosing a Managed Security Service Provider,Supporting,Commercial,2,2000
+Cybersecurity Services,SOAR in Cybersecurity,Understanding SOAR in Cybersecurity,Supporting,Informational,1,1900
+Cybersecurity Services,Security Orchestration Automation,Guide to SOAR and Automation,Pillar page,Informational,5,1810
+Cybersecurity Services,XDR Cybersecurity Solutions,MXDR Solutions Overview,Supporting,Commercial,7,1750
+Cybersecurity Services,Managed Detection and Response,Managed Threat Detection Services Guide,Supporting,Commercial,10,1750
+Cybersecurity Services,SIEM Overview,Best SIEM Tools and Solutions,Supporting,Commercial,5,1730
+Cybersecurity Services,SIEM Overview,SIEM Logging and Management,Supporting,Informational,6,1670
+Cybersecurity Services,Managed Detection and Response,Managed Endpoint Security Solutions,Supporting,Transactional,4,1590
+Cybersecurity Services,SOAR in Cybersecurity,Essential SOAR Tools for Automation,Supporting,Commercial,3,1420
+Cybersecurity Services,SIEM Overview,SIEM and SOC Comparison,Supporting,Informational,5,1400
+Cybersecurity Services,SOAR in Cybersecurity,Best SOAR Platforms Reviewed,Supporting,Commercial,2,1360
+Cybersecurity Services,MDR Cybersecurity Solutions,MDR in Cybersecurity Explained,Supporting,Commercial,11,1350
+Cybersecurity Services,Network Security Solutions,Benefits of Managed Network Security,Supporting,Commercial,1,1300
+Cybersecurity Services,Network Security Solutions,What Is Network Security?,Supporting,Informational,1,1300
+Cybersecurity Services,SIEM Comparisons,XDR Compared to SIEM,Pillar page,Informational,3,1300
+Cybersecurity Services,ASM Security Solutions,Definition and Overview of ASM,Pillar page,Informational,2,1210
+Cybersecurity Services,XDR Cybersecurity Solutions,Managed XDR Services Guide,Supporting,Commercial,6,1200
+Cybersecurity Services,SEIM Solutions,Top SEIM Tools Comparison,Supporting,Mixed,2,1180
+Cybersecurity Services,Managed Security Solutions,Security Operations Center Solutions,Supporting,Commercial,5,1160
+Cybersecurity Services,EASM Cybersecurity Solutions,Top EASM Solutions Overview,Pillar page,Commercial,4,1160
+Cybersecurity Services,Next Generation Antivirus,Next Generation Antivirus Solutions,Pillar page,Commercial,5,1150
+Cybersecurity Services,SOAR in Cybersecurity,Top SOAR Solutions and Services,Supporting,Commercial,5,1110
+Cybersecurity Services,Managed Security Solutions,Leading Managed Security Providers,Supporting,Commercial,2,1070
+Cybersecurity Services,EDR Security Solutions,Benefits of Managed EDR,Supporting,Commercial,1,1000
+Cybersecurity Services,MTDR Overview,Understanding MTDR Technology,Pillar page,Informational,1,1000
+Cybersecurity Services,Security Orchestration Automation,Understanding Security Orchestration,Supporting,Mixed,2,980
+Cybersecurity Services,SIEM Overview,SIEM Monitoring and Alerts,Supporting,Mixed,3,970
+Cybersecurity Services,SIEM Solutions,Top SIEM Solutions Overview,Pillar page,Commercial,1,880
+Cybersecurity Services,Gartner SIEM Insights,Understanding SIEM Magic Quadrant,Pillar page,Informational,5,860
+Cybersecurity Services,NGAV Overview,Understanding NGAV Solutions,Pillar page,Mixed,4,860
+Cybersecurity Services,SIEM Overview,Understanding SEIM vs SIEM,Supporting,Informational,3,840
+Cybersecurity Services,Network Security Solutions,Top Network Security Monitoring Tools,Supporting,Commercial,1,720
+Cybersecurity Services,SIEM Comparisons,EDR Versus SIEM Explained,Supporting,Informational,2,710
+Cybersecurity Services,MDR Cybersecurity Solutions,Leading MDR Vendors List,Supporting,Commercial,4,610
+Cybersecurity Services,Managed Security Solutions,Security Managed Solutions,Supporting,Transactional,1,590
+Cybersecurity Services,SOAR in Cybersecurity,SIEM and SOAR Relationship,Supporting,Informational,1,590
+Cybersecurity Services,Intrusion Detection Systems,Understanding Intrusion Detection Systems,Supporting,Informational,1,590
+Cybersecurity Services,Managed Security Solutions,Managed Security Operations Overview,Supporting,Mixed,2,580
+Cybersecurity Services,SIEM Overview,Exploring Security Intelligence Platforms,Supporting,Mixed,2,580
+Cybersecurity Services,XDR Cybersecurity Solutions,Exploring Open XDR Platforms,Supporting,Mixed,4,570
+Cybersecurity Services,SIEM Comparisons,MDR and SIEM Comparison,Supporting,Informational,2,560
+Cybersecurity Services,MDR Cybersecurity Solutions,MDR Tools and Monitoring,Supporting,Mixed,3,550
+Cybersecurity Services,MDR Cybersecurity Solutions,Microsoft MDR Services Explained,Supporting,Commercial,2,530
+Cybersecurity Services,SIEM Overview,SIEM Solutions Overview,Supporting,Commercial,1,480
+Cybersecurity Services,Managed Detection and Response,Introduction to Managed Threat Hunting,Supporting,Commercial,1,480
+Cybersecurity Services,CTEM Cybersecurity Solutions,Understanding CTEM Framework,Supporting,Informational,1,480
+Cybersecurity Services,Security Analytics Tools,Top Ueba Tools Overview,Pillar page,Commercial,1,480
+Cybersecurity Services,IDPS Overview,What Is IDPS?,Supporting,Informational,2,480
+Cybersecurity Services,XDR Cybersecurity Solutions,Top XDR Vendors Reviewed,Supporting,Commercial,5,460
+Cybersecurity Services,SIEM Overview,Next Generation SIEM Overview,Supporting,Commercial,2,430
+Cybersecurity Services,MDR Cybersecurity Solutions,MDR vs SOC Comparison,Supporting,Informational,3,430
+Cybersecurity Services,Gartner SIEM Insights,Gartner's SIEM Insights,Supporting,Informational,2,420
+Cybersecurity Services,ASM Security Solutions,Understanding ASM Security Concepts,Supporting,Informational,3,420
+Cybersecurity Services,MDR Cybersecurity Solutions,MDR Pricing Insights,Supporting,Mixed,2,410
+Cybersecurity Services,Managed Detection and Response,Understanding Endpoint Detection,Supporting,Informational,1,390
+Cybersecurity Services,CTEM Cybersecurity Solutions,CTEM in Cybersecurity Explained,Supporting,Informational,4,390
+Cybersecurity Services,SIEM Solutions,Understanding SOC SIEM Functionality,Supporting,Informational,1,390
+Cybersecurity Services,SIEM Solutions,AI-Driven SIEM Tools Comparison,Supporting,Commercial,1,390
+Cybersecurity Services,SIEM Overview,Examples of SIEM Tools,Supporting,Informational,2,340
+Cybersecurity Services,SIEM Overview,Understanding SIEM Events,Supporting,Informational,1,320
+Cybersecurity Services,SIEM Comparisons,SIEM Against MDR Overview,Supporting,Informational,1,320
+Cybersecurity Services,EASM Cybersecurity Solutions,EASM Cybersecurity Insights,Supporting,Commercial,2,280
+Cybersecurity Services,SIEM Overview,Co-Managed SIEM Services,Supporting,Commercial,3,260
+Cybersecurity Services,SIEM Overview,Benefits of Using SIEM,Supporting,Informational,1,260
+Cybersecurity Services,SOC as a Service,Overview of SOC Managed Services,Supporting,Commercial,1,260
+Cybersecurity Services,Log Management Solutions,Security Log Management Essentials,Supporting,Commercial,1,260
+Cybersecurity Services,Security Orchestration Automation,Top Security Automation Tools,Supporting,Commercial,1,260
+Cybersecurity Services,SIEM Overview,SIEM Companies and Consulting,Supporting,Mixed,2,250
+Cybersecurity Services,MDR Cybersecurity Solutions,Benefits of MDR Solutions,Supporting,Mixed,2,250
+Cybersecurity Services,Managed Detection and Response,Managed Detection Services Overview,Supporting,Mixed,2,250
+Cybersecurity Services,ASM Security Solutions,Top ASM Tools and Software,Supporting,Commercial,5,240
+Cybersecurity Services,EDR Security Solutions,NGAV vs EDR Comparison,Supporting,Informational,1,210
+Cybersecurity Services,SIEM Overview,SIEM Pricing Information,Supporting,Transactional,1,210
+Cybersecurity Services,MDR Cybersecurity Solutions,Introduction to Cyber MDR,Supporting,Commercial,1,210
+Cybersecurity Services,XDR Cybersecurity Solutions,What Is MXDR?,Supporting,Informational,1,210
+Cybersecurity Services,Cira Overview,CIRA Meaning Explained,Pillar page,Informational,1,210
+Cybersecurity Services,SIEM Overview,Top 10 SIEM Tools List,Supporting,Informational,1,170
+Cybersecurity Services,MDR Cybersecurity Solutions,MDR IT Solutions Overview,Supporting,Commercial,1,170
+Cybersecurity Services,SOAR in Cybersecurity,Leading SOAR Vendors Comparison,Supporting,Commercial,1,170
+Cybersecurity Services,Gartner SIEM Insights,Gartner MQ for SIEM Overview,Supporting,Informational,1,170
+Cybersecurity Services,Next Generation Antivirus,Overview of Next Gen AV,Supporting,Commercial,1,170
+Cybersecurity Services,Security Analytics Tools,Best Bas Tools Comparison,Supporting,Commercial,1,170
+Cybersecurity Services,SIEM Overview,Security Event Monitoring Solutions,Supporting,Commercial,1,140
+Cybersecurity Services,SIEM Overview,MSSP SIEM Services Overview,Supporting,Commercial,1,140
+Cybersecurity Services,SIEM Overview,SIEM and Threat Intelligence,Supporting,Commercial,1,140
+Cybersecurity Services,Gartner SIEM Insights,Gartner MDR Quadrant Explained,Supporting,Informational,2,140
+Cybersecurity Services,Network Security Solutions,Guide to Network Security Analysis,Supporting,Informational,1,140
+Cybersecurity Services,Log Management Solutions,Enterprise Log Management Overview,Supporting,Commercial,1,140
+Cybersecurity Services,SIEM Solutions,Benefits of AI in SIEM,Supporting,Commercial,1,140
+Cybersecurity Services,EDR Security Solutions,Role of EDR Agents,Supporting,Commercial,1,110
+Cybersecurity Services,Managed Security Solutions,Trusted Managed Security Companies,Supporting,Commercial,1,110
+Cybersecurity Services,MDR Cybersecurity Solutions,MDR Solutions for Enterprises,Supporting,Commercial,2,110
+Cybersecurity Services,MDR Cybersecurity Solutions,MDR for Operational Technology Security,Supporting,Commercial,1,110
+Cybersecurity Services,Gartner SIEM Insights,Exploring Gartner MDR Analysis,Supporting,Informational,1,110
+Cybersecurity Services,EASM Cybersecurity Solutions,Understanding EASM Basics,Supporting,Informational,1,110
+Cybersecurity Services,Custom MDR Solutions,Custom Flexible MDR Solutions,Pillar page,Commercial,1,110
+Cybersecurity Services,Cira Overview,Understanding CIRA Concepts,Supporting,Informational,1,110
+Cybersecurity Services,Unified Threat Management,Top Unified Threat Management Appliances,Pillar page,Commercial,1,110
+Cybersecurity Services,SIEM Overview,Comparing SIEM Products and Providers,Supporting,Commercial,2,70
+Miscellaneous,Software Development Life Cycle,Understanding SDLC Meaning,Supporting,Informational,3,31700
+Miscellaneous,Software Development Life Cycle,Overview of Software Development Life Cycle,Pillar page,Informational,3,19170
+Risk Management,IT Asset Management,Understanding IT Asset Management,Pillar page,Mixed,4,7650
+Risk Management,Cybersecurity Risk Management,Understanding Cyber Risk Management,Pillar page,Informational,10,7460
+Risk Management,Cybersecurity Risk Management,Top Cybersecurity Risk Assessment Tools,Supporting,Commercial,12,6520
+Risk Management,Third Party Risk Management,Understanding Third Party Risk Management,Pillar page,Informational,4,4810
+Risk Management,DRP Overview,What is DRP? A Comprehensive Guide,Pillar page,Informational,5,3950
+Risk Management,Shadow IT Overview,Understanding Shadow IT Examples,Supporting,Informational,3,3930
+Risk Management,Cybersecurity Risk Management,What Is Cyber Risk?,Supporting,Informational,4,3320
+Risk Management,Cybersecurity Risk Management,IT Risk Management Best Practices,Supporting,Informational,5,3170
+Risk Management,Cybersecurity Risk Management,Comprehensive Security Risk Management,Supporting,Informational,7,2990
+Risk Management,Incident Response Solutions,Managed Incident Response Services,Pillar page,Commercial,4,2150
+Risk Management,Threat Exposure Management,Top Exposure Management Solutions,Pillar page,Commercial,7,1510
+Risk Management,Shadow IT Overview,What Is Shadow IT?,Pillar page,Informational,1,1300
+Risk Management,IT Asset Management,Leading ITAM Software Solutions,Supporting,Commercial,1,1300
+Risk Management,Threat Exposure Management,Understanding Continuous Threat Exposure Management,Supporting,Informational,8,1230
+Risk Management,IT Asset Management,Top IT Asset Discovery Tools,Supporting,Commercial,4,1210
+Risk Management,IT Asset Management,Overview of IT Asset Inventory,Supporting,Informational,3,1180
+Risk Management,Cybersecurity Risk Management,Information Security Risk Assessment Insights,Supporting,Mixed,2,890
+Risk Management,IT Asset Management,Exploring ITAM Systems,Supporting,Informational,1,880
+Risk Management,IT Asset Management,Introduction to IT Asset Management,Supporting,Mixed,2,860
+Risk Management,IT Asset Management,What Is ITAM?,Supporting,Informational,2,800
+Risk Management,IT Asset Management,Best Asset Discovery Software,Supporting,Commercial,3,760
+Risk Management,TPRM Overview,Understanding TPRM Programs,Pillar page,Informational,2,690
+Risk Management,Third Party Risk Management,Third Party Cyber Risk Solutions,Supporting,Commercial,3,530
+Risk Management,Cybersecurity Risk Management,Cyber Exposure Management Strategies,Supporting,Commercial,5,480
+Risk Management,Cybersecurity Risk Management,Risk Management in IT Security,Supporting,Informational,5,480
+Risk Management,Risk Remediation Strategies,Understanding Risk Remediation,Pillar page,Informational,3,450
+Risk Management,Threat Exposure Management,Exploring Threat Exposure Management Platforms,Supporting,Mixed,2,430
+Risk Management,DRP Overview,Understanding DRP in Cyber Security,Supporting,Informational,3,410
+Risk Management,Cybersecurity Risk Management,Cybersecurity Risk Management Framework Overview,Supporting,Informational,1,390
+Risk Management,DRP Overview,Exploring DRP Solutions Options,Supporting,Mixed,2,390
+Risk Management,Cybersecurity Risk Management,Best Cyber Risk Management Platforms,Supporting,Commercial,2,350
+Risk Management,Cybersecurity Risk Management,Cyber Security Asset Management Solutions,Supporting,Commercial,3,300
+Risk Management,Cybersecurity Risk Management,Professional Cyber Risk Services,Supporting,Commercial,1,260
+Risk Management,Exposure Assessment Solutions,Understanding Exposure Assessment Platforms,Pillar page,Informational,5,260
+Risk Management,Cybersecurity Risk Management,Leading Cyber Risk Assessment Companies,Supporting,Commercial,2,220
+Risk Management,IT Asset Management,Benefits of IT Asset Management,Supporting,Informational,1,210
+Risk Management,Third Party Risk Management,Navigating Third Party Compliance,Supporting,Informational,1,170
+Risk Management,Incident Response Solutions,Breach Response Service Overview,Supporting,Commercial,1,140
+Risk Management,Cybersecurity Risk Management,Effective Cyber Risk Reduction Techniques,Supporting,Mixed,2,60
+Security Management,Identity Access Management,IAM Solutions Overview,Pillar page,Commercial,1,33100
+Security Management,Zero Trust Security,Exploring Zero Trust Architecture,Pillar page,Informational,11,27060
+Security Management,LPA Overview,Understanding LPA Meaning,Pillar page,Informational,3,21000
+Security Management,Identity Access Management,Comprehensive IAM Tools Guide,Supporting,Commercial,14,16710
+Security Management,Zero Trust Security,Understanding Zero Trust Security,Supporting,Informational,4,8240
+Security Management,Least Privilege Access,Understanding Least Privilege Principle,Pillar page,Informational,5,7380
+Security Management,SOC Reporting Insights,Comprehensive Guide to SOC Reports,Pillar page,Informational,5,6290
+Security Management,Attack Surface Management,Top Attack Surface Management Solutions,Pillar page,Commercial,15,5760
+Security Management,Network Access Control,Understanding Network Access Control Solutions,Pillar page,Commercial,9,5590
+Security Management,Network Segmentation Guide,Understanding Network Segmentation,Pillar page,Informational,2,4480
+Security Management,Attribute-Based Access Control,Understanding Attribute Based Access Control,Pillar page,Informational,2,4400
+Security Management,Attack Surface Management,Comprehensive Attack Surface Analysis,Supporting,Mixed,12,4230
+Security Management,SOC Reporting Insights,Understanding SOC Services,Supporting,Commercial,2,2880
+Security Management,Attack Surface Management,External Attack Surface Management Overview,Supporting,Commercial,13,2790
+Security Management,NAC Solutions,NAC Network Access Solutions,Pillar page,Commercial,3,2100
+Security Management,Identity Access Management,Understanding IAM Basics,Supporting,Informational,1,1900
+Security Management,Identity Access Management,Identity Management Systems Explained,Supporting,Mixed,2,1600
+Security Management,Privileged Access Management,Privileged Access Management Options,Pillar page,Commercial,3,1390
+Security Management,Identity Access Management,Top IAM Tools Comparison,Supporting,Commercial,1,1300
+Security Management,NAC Solutions,Exploring NAC Solutions,Supporting,Mixed,2,1270
+Security Management,Attack Surface Management,Strategies for Attack Surface Reduction,Supporting,Informational,4,1110
+Security Management,SOC Reporting Insights,What Is a SOC Report?,Supporting,Informational,1,880
+Security Management,Privileged Access Management,PAM Security Solutions Overview,Supporting,Commercial,2,800
+Security Management,NAC Solutions,NAC Cybersecurity Overview,Supporting,Commercial,3,740
+Security Management,Multi-Factor Authentication,Understanding Multi-Factor Authentication,Pillar page,Mixed,2,650
+Security Management,MCP Security Strategies,MCP Security Best Practices Guide,Pillar page,Commercial,3,640
+Security Management,Attack Surface Management,What Is an Attack Surface?,Supporting,Informational,4,620
+Security Management,Attack Surface Management,Continuous Attack Surface Monitoring Explained,Supporting,Commercial,3,600
+Security Management,Attack Surface Management,Exploring Attack Path Management,Supporting,Informational,4,510
+Security Management,MFA Definition,Understanding MFA Meaning,Pillar page,Informational,1,480
+Security Management,ABAC Overview,Understanding ABAC Definition,Pillar page,Informational,2,420
+Security Management,SOC Reporting Insights,Overview of SOC Controls,Supporting,Informational,1,390
+Security Management,Identity Access Management,Exploring IAM Technology,Supporting,Informational,1,320
+Security Management,Identity Access Management,Best IAM Platforms Reviewed,Supporting,Commercial,1,320
+Security Management,Identity Access Management,Effective IAM Management Strategies,Supporting,Commercial,1,320
+Security Management,RBAC in Cyber Security,RBAC in Cyber Security Explained,Pillar page,Informational,3,290
+Security Management,RBAC in Cyber Security,Understanding RBAC Model,Supporting,Informational,1,210
+Security Management,Attack Surface Management,Attack Surface vs Attack Vector Comparison,Supporting,Informational,1,170
+Security Management,ZTA Overview,Understanding Zero Trust Architecture,Pillar page,Informational,1,170
+Security Management,Attack Surface Management,Understanding Attack Surface Intelligence,Supporting,Informational,1,140
+Security Management,Zero Trust Security,Importance of Zero Trust Security,Supporting,Informational,1,140
+Security Management,Security Protocol Model,Understanding Model Context Protocol Security,Pillar page,Informational,1,140
+Threat Management,Dark Web Insights,Comprehensive Dark Web Guide,Pillar page,Informational,4,158570
+Threat Management,Social Engineering Overview,Understanding Social Engineering Concepts,Pillar page,Informational,4,52500
+Threat Management,Dark Internet,Understanding The Dark Internet,Pillar page,Informational,1,40500
+Threat Management,Ransomware Awareness,Understanding Ransomware Attacks,Pillar page,Informational,3,34420
+Threat Management,Penetration Testing Overview,Types of Penetration Testing,Pillar page,Mixed,5,30370
+Threat Management,CVE Vulnerability Insights,What Is a CVE?,Pillar page,Informational,4,27800
+Threat Management,Spoofing Explained,Understanding Spoofing Attacks,Pillar page,Informational,4,27280
+Threat Management,Vulnerability Management,Vulnerability Assessment Solutions,Pillar page,Commercial,19,25540
+Threat Management,Spear Phishing Overview,Understanding Spear Phishing Attacks,Pillar page,Informational,5,24280
+Threat Management,Vulnerability Management,Vulnerability Management Overview,Supporting,Commercial,31,18830
+Threat Management,Dark Web Insights,Understanding The Dark Web,Supporting,Informational,1,18100
+Threat Management,Penetration Testing Overview,Understanding Pen Testing Basics,Supporting,Mixed,2,17500
+Threat Management,Man-in-the-Middle Attacks,Understanding Man In The Middle Attacks,Pillar page,Informational,2,17500
+Threat Management,Vulnerability Management,Vulnerability Scanning Tools Explained,Supporting,Commercial,14,16990
+Threat Management,Open Source Intelligence,Understanding Open Source Intelligence,Pillar page,Informational,4,16180
+Threat Management,Vulnerability Management,Understanding Vulnerabilities Defined,Supporting,Informational,6,15700
+Threat Management,NTA Definition,Understanding NTA Meaning,Pillar page,Informational,2,15300
+Threat Management,Threat Intelligence Solutions,Top Threat Intelligence Platforms,Pillar page,Commercial,18,15040
+Threat Management,Botnet Overview,Understanding Botnets Explained,Pillar page,Informational,1,14800
+Threat Management,XSS Vulnerabilities,Understanding Cross Site Scripting,Pillar page,Informational,3,10200
+Threat Management,Threat Intelligence Solutions,Understanding Cyber Threat Intelligence,Supporting,Mixed,9,9380
+Threat Management,CVE Vulnerability Insights,Understanding CVE Vulnerabilities,Supporting,Informational,3,8820
+Threat Management,Red Teaming Concepts,Understanding Red Team Meaning,Supporting,Informational,2,8490
+Threat Management,Red Teaming Concepts,Introduction to Red Teaming,Pillar page,Informational,5,8290
+Threat Management,Exploit Resources,Overview of Exploits,Pillar page,Informational,1,8100
+Threat Management,Patch Management Strategies,Comprehensive Patch Management Solutions,Pillar page,Commercial,10,7980
+Threat Management,Botnet Overview,Botnet Attacks and Their Meaning,Supporting,Informational,3,7910
+Threat Management,Lateral Movement Concepts,Understanding Lateral Movement,Pillar page,Informational,4,7810
+Threat Management,Penetration Testing Overview,Choosing Pen Testing Services,Supporting,Transactional,5,7670
+Threat Management,Dark Web Insights,Dark Web Monitoring Explained,Supporting,Mixed,7,6710
+Threat Management,CVE Vulnerability Insights,Overview of Common Vulnerabilities and Exposures,Supporting,Informational,2,6670
+Threat Management,Spear Phishing Overview,Overview of Phishing Attacks,Supporting,Informational,1,6600
+Threat Management,Zero Day Attacks,Understanding Zero Day Attacks,Pillar page,Informational,4,6570
+Threat Management,Vulnerability Management,Vulnerability Management Best Practices,Supporting,Informational,9,6310
+Threat Management,MITRE ATT&CK Framework,Understanding MITRE ATT&CK Framework,Pillar page,Informational,1,5400
+Threat Management,Brute Force Attacks,Understanding Brute Force Attacks,Pillar page,Informational,5,5370
+Threat Management,Ransomware Awareness,Effective Ransomware Protection Solutions,Supporting,Mixed,3,5220
+Threat Management,Penetration Testing Overview,Top Penetration Testing Tools,Supporting,Mixed,4,5110
+Threat Management,Compromise Indicators,Understanding Indicators of Compromise,Pillar page,Informational,3,4790
+Threat Management,Penetration Testing Overview,Comprehensive Penetration Tests,Supporting,Transactional,2,4190
+Threat Management,Man-in-the-Middle Attacks,Introduction To MITM Attacks,Supporting,Informational,2,4080
+Threat Management,Open Source Intelligence,What Is OSINT Explained,Supporting,Informational,4,4010
+Threat Management,Penetration Testing Overview,What Is Penetration Testing?,Supporting,Informational,2,3900
+Threat Management,Supply Chain Attacks,Understanding Supply Chain Attacks,Pillar page,Informational,5,3840
+Threat Management,Malvertising Explained,Understanding Malvertising Concepts,Pillar page,Informational,3,3680
+Threat Management,Advanced Threat Protection,Advanced Threat Protection Solutions,Pillar page,Commercial,6,3610
+Threat Management,Denial of Service Attacks,Understanding DDoS and DoS Attacks,Pillar page,Informational,3,3190
+Threat Management,Remote Code Execution,Understanding Remote Code Execution,Pillar page,Informational,4,3120
+Threat Management,Spear Phishing Overview,Types of Phishing Attacks Explained,Supporting,Informational,2,2900
+Threat Management,NDR Insights,Understanding NDR Meaning,Pillar page,Informational,2,2900
+Threat Management,UEBA Insights,Top Ueba Solutions Overview,Pillar page,Commercial,1,2900
+Threat Management,APT Threat Landscape,Understanding APT Attacks,Pillar page,Informational,2,2900
+Threat Management,Exploit Resources,Exploit Database Insights,Supporting,Informational,2,2880
+Threat Management,Digital Risk Protection,Digital Risk Protection Solutions,Pillar page,Commercial,9,2530
+Threat Management,Zero Day Attacks,Exploring Zero Day Security Exploits,Supporting,Informational,1,2400
+Threat Management,Patch Management Strategies,Overview of Patch Tuesday,Supporting,Informational,1,2400
+Threat Management,Vulnerability Management,Security Vulnerabilities Overview,Supporting,Informational,4,2180
+Threat Management,SQL Injection Overview,SQL Injection Definition Explained,Pillar page,Informational,2,2180
+Threat Management,Threat Detection Solutions,Top Threat Detection Software,Pillar page,Commercial,3,2010
+Threat Management,Malware Attacks Overview,Defining Malware Attacks,Pillar page,Informational,4,2000
+Threat Management,Vulnerability Management,Threat and Vulnerability Management,Supporting,Informational,3,1950
+Threat Management,Network Traffic Analysis,Top Network Traffic Monitors,Pillar page,Commercial,5,1950
+Threat Management,Advanced Threat Protection,Understanding Advanced Persistent Threats,Supporting,Informational,3,1870
+Threat Management,Remote Code Execution,Arbitrary Code Execution Explained,Supporting,Informational,3,1860
+Threat Management,Ransomware Awareness,Common Types of Ransomware,Supporting,Informational,2,1720
+Threat Management,Network Traffic Analysis,Essential Network Traffic Analysis Tools,Supporting,Commercial,4,1720
+Threat Management,Threat Modeling Concepts,Understanding Threat Models,Pillar page,Informational,3,1670
+Threat Management,User Behavior Analytics,Understanding User Behavior Analytics,Pillar page,Commercial,5,1670
+Threat Management,Threat Detection Solutions,Understanding Threat Detection and Response,Supporting,Commercial,3,1620
+Threat Management,SQL Injection Overview,Understanding SQL Injection,Supporting,Informational,1,1600
+Threat Management,Penetration Testing Overview,Automated Penetration Testing Solutions,Supporting,Commercial,2,1560
+Threat Management,Threat Modeling Concepts,Threat Modeling Frameworks and Process,Supporting,Informational,3,1520
+Threat Management,Penetration Testing Overview,Penetration Testing as a Service,Supporting,Transactional,3,1410
+Threat Management,Threat Detection Solutions,Identity Threat Detection Solutions,Supporting,Commercial,6,1380
+Threat Management,Exploit Resources,Understanding Data Exploits,Supporting,Informational,1,1300
+Threat Management,Malware Attacks Overview,Understanding Malware Functions,Supporting,Informational,1,1300
+Threat Management,Whaling Cybersecurity,Understanding Whaling Attacks,Pillar page,Informational,1,1300
+Threat Management,Denial of Service Attacks,Overview of DoS Attacks,Supporting,Informational,1,1300
+Threat Management,Vulnerability Management,Risk-Based Vulnerability Management,Supporting,Commercial,5,1290
+Threat Management,Patch Management Strategies,Understanding Patch Management Basics,Supporting,Mixed,5,1280
+Threat Management,Penetration Testing Overview,External Penetration Testing Overview,Supporting,Commercial,4,1260
+Threat Management,Red Teaming Concepts,Red Team Testing Services Overview,Supporting,Mixed,7,1250
+Threat Management,Vulnerability Management,Vulnerability Testing Services,Supporting,Commercial,2,1210
+Threat Management,Threat Intelligence Solutions,What Is Threat Intelligence?,Supporting,Informational,2,1200
+Threat Management,SQL Injection Overview,Types of SQL Injections,Supporting,Informational,2,1140
+Threat Management,Vulnerability Management,Cybersecurity Vulnerability Assessments,Supporting,Informational,4,1120
+Threat Management,Vulnerability Management,Vulnerability Prioritization Techniques,Supporting,Mixed,5,1090
+Threat Management,Vulnerability Management,Vulnerability Remediation Process,Supporting,Mixed,2,1050
+Threat Management,APT Threat Landscape,What Is An APT?,Supporting,Informational,1,1000
+Threat Management,Indicators of Compromise,Understanding IOCs in Cybersecurity,Pillar page,Informational,1,1000
+Threat Management,Breach Attack Simulation,Top Breach And Attack Simulation Tools,Pillar page,Commercial,5,1000
+Threat Management,Denial of Service Attacks,Effective DDoS Prevention Strategies,Supporting,Informational,1,880
+Threat Management,Backdoor Cybersecurity,Exploring Backdoor Access,Pillar page,Informational,2,800
+Threat Management,Vulnerability Management,Vulnerability Mitigation Strategies,Supporting,Informational,2,790
+Threat Management,Vulnerability Management,Managed Vulnerability Services,Supporting,Commercial,4,730
+Threat Management,NDR Insights,Top NDR Solutions Available,Supporting,Commercial,3,720
+Threat Management,Spoofing Explained,Spoofing in Cyber Security Explained,Supporting,Informational,1,720
+Threat Management,SQL Injection Overview,Overview of SQL Exploits,Supporting,Informational,1,720
+Threat Management,SQL Injection Overview,Identifying SQL Vulnerabilities,Supporting,Informational,1,720
+Threat Management,User Behavior Analytics,User And Entity Behavior Analytics Overview,Supporting,Commercial,1,720
+Threat Management,Network Traffic Analysis,Understanding Network Traffic Basics,Supporting,Informational,1,720
+Threat Management,LOTL Insights,What Does LOTL Mean?,Pillar page,Informational,2,680
+Threat Management,Vulnerability Management,Continuous Vulnerability Management,Supporting,Informational,1,590
+Threat Management,XSS Vulnerabilities,Overview of XSS Attacks,Supporting,Informational,1,590
+Threat Management,Patch Management Strategies,Introduction to Network Patching,Supporting,Informational,2,590
+Threat Management,Remote Code Execution,Exploring RCE Exploits,Supporting,Informational,1,590
+Threat Management,Indicators of Compromise,What Are IOCs Explained,Supporting,Informational,1,590
+Threat Management,UEBA Overview,Understanding UEBA Concepts,Pillar page,Informational,1,590
+Threat Management,Vulnerability Management,Software Vulnerability Tools Guide,Supporting,Commercial,2,570
+Threat Management,Digital Risk Protection,Understanding Digital Threat Intelligence,Supporting,Mixed,2,560
+Threat Management,Vulnerability Management,Enterprise Vulnerability Management,Supporting,Commercial,2,550
+Threat Management,NDR Insights,NDR in Cyber Security Explained,Supporting,Mixed,2,550
+Threat Management,Breach Attack Simulation,Overview Of Breach Attack Simulation,Supporting,Commercial,4,540
+Threat Management,Threat Modeling Concepts,Exploring Threat Actors,Supporting,Informational,2,530
+Threat Management,Network Traffic Analysis,Best Network Analyzer Tools,Supporting,Commercial,2,520
+Threat Management,Vulnerability Management,Vulnerability Database Insights,Supporting,Informational,1,480
+Threat Management,Exploit Resources,What Is An Exploit?,Supporting,Informational,1,480
+Threat Management,Dark Web Insights,Best Dark Web Scanner Tools,Supporting,Transactional,1,480
+Threat Management,Man-in-the-Middle Attacks,Overview Of MITM Attack Types,Supporting,Informational,1,480
+Threat Management,SQL Injection Overview,Common SQL Injection Examples,Supporting,Informational,1,480
+Threat Management,Whaling Cybersecurity,Whaling in Cyber Security,Supporting,Informational,1,480
+Threat Management,UEBA Overview,Top UEBA Security Solutions,Supporting,Commercial,1,480
+Threat Management,Deception Technology Insights,Understanding Deception Technology,Pillar page,Informational,1,480
+Threat Management,Vulnerability Management,Application Vulnerability Management,Supporting,Mixed,2,470
+Threat Management,Backdoor Cybersecurity,Backdoor Malware in Cyber Security,Supporting,Informational,3,460
+Threat Management,Network Telemetry Insights,Introduction to Network Telemetry,Pillar page,Informational,2,430
+Threat Management,Vulnerability Management,Vulnerability Intelligence Explained,Supporting,Informational,1,390
+Threat Management,Vulnerability Management,Network Vulnerability Management Guide,Supporting,Informational,1,390
+Threat Management,Vulnerability Management,Threat vs Vulnerability Comparison,Supporting,Informational,1,390
+Threat Management,Dark Web Insights,Effective Dark Web Protection,Supporting,Commercial,1,390
+Threat Management,Penetration Testing Overview,Meaning of Penetration Testing,Supporting,Informational,1,390
+Threat Management,Lateral Movement Concepts,Lateral Movement in Cyber Security,Supporting,Informational,1,390
+Threat Management,Threat Modeling Concepts,Defining Threat Models,Supporting,Informational,1,390
+Threat Management,Whaling Cybersecurity,What Is Whale Phishing?,Supporting,Informational,2,390
+Threat Management,Kerberoasting Security,Understanding Kerberoasting Attacks,Pillar page,Informational,2,380
+Threat Management,Backdoor Cybersecurity,Understanding Backdoor Attacks,Supporting,Informational,2,370
+Threat Management,Vulnerability Management,Examples of Vulnerabilities,Supporting,Informational,2,350
+Threat Management,Living Off the Land Attacks,Understanding Living Off The Land Attacks,Pillar page,Informational,2,350
+Threat Management,Patch Management Strategies,Vulnerability and Security Patching,Supporting,Mixed,2,330
+Threat Management,Vulnerability Management,Vulnerability Management Tools,Supporting,Commercial,2,320
+Threat Management,Threat Intelligence Solutions,Types of Threat Intelligence,Supporting,Informational,1,320
+Threat Management,Malware Attacks Overview,Exploring Cyber Attack Types,Supporting,Informational,1,320
+Threat Management,Threat Detection Solutions,Detecting Cyber Threats Effectively,Supporting,Informational,2,310
+Threat Management,Red Teaming Concepts,Automated Red Teaming Explained,Supporting,Mixed,2,280
+Threat Management,Ransomware Awareness,Mechanics of Ransomware Operations,Supporting,Informational,1,260
+Threat Management,Vulnerability Management,Vulnerability Scanning as a Service,Supporting,Transactional,1,260
+Threat Management,Botnet Overview,Real-World Botnet Examples,Supporting,Informational,1,260
+Threat Management,Threat Intelligence Solutions,Managed Threat Intelligence Services,Supporting,Commercial,1,260
+Threat Management,Threat Modeling Concepts,Security Threat Modeling Overview,Supporting,Informational,1,260
+Threat Management,ATP Cyber Security,ATP Cyber Security Solutions Overview,Pillar page,Commercial,1,260
+Threat Management,Dictionary Attacks,Understanding Dictionary Attacks,Supporting,Informational,1,260
+Threat Management,Dictionary Attacks,Overview of Dictionary Attacks,Pillar page,Informational,1,260
+Threat Management,Man-in-the-Middle Attacks,Preventing Man In The Middle Attacks,Supporting,Informational,3,250
+Threat Management,Threat Intelligence Solutions,Open Source Threat Intelligence Feeds,Supporting,Informational,2,240
+Threat Management,Threat Intelligence Solutions,Threat Intelligence Feed Providers,Supporting,Commercial,2,240
+Threat Management,Ransomware Awareness,Malware Versus Ransomware Explained,Supporting,Informational,1,210
+Threat Management,Patch Management Strategies,Effective Server Patching Strategies,Supporting,Transactional,1,210
+Threat Management,Threat Detection Solutions,Network Threat Detection Explained,Supporting,Informational,1,210
+Threat Management,Threat Detection Solutions,What Is Threat Detection?,Supporting,Informational,1,210
+Threat Management,Malvertising Explained,Defining Malicious Ads Meaning,Supporting,Informational,1,210
+Threat Management,Denial of Service Attacks,Current Trends in DoS Attacks,Supporting,Informational,1,210
+Threat Management,Threat Modeling Concepts,Threat Actors in Cyber Security,Supporting,Informational,2,200
+Threat Management,MVM Solutions,MVM Management and Security Insights,Pillar page,Commercial,2,180
+Threat Management,Dark Web Insights,Insights Into Dark Web Intelligence,Supporting,Commercial,1,170
+Threat Management,Threat Detection Solutions,Cyber Security Detection Strategies,Supporting,Commercial,1,170
+Threat Management,Threat Modeling Concepts,Threat Actor Definition Explained,Supporting,Informational,1,170
+Threat Management,Kerberoasting Explained,Understanding Kerberos Authentication,Pillar page,Informational,1,170
+Threat Management,MVM Solutions,VMAAS Solutions Overview,Supporting,Commercial,1,170
+Threat Management,Vulnerability Management,AI in Vulnerability Management,Supporting,Commercial,3,140
+Threat Management,Social Engineering Overview,Exploring Social Engineering Attack Surfaces,Supporting,Informational,1,140
+Threat Management,Penetration Testing Overview,Best Pen Test Tools,Supporting,Commercial,1,140
+Threat Management,User Behavior Analytics,Exploring User Entity Behavior Analytics,Supporting,Commercial,1,140
+Threat Management,Vulnerability Management,IT Vulnerabilities and Threats,Supporting,Informational,1,110
+Threat Management,MITRE ATT&CK Framework,Introduction to MITRE ATT&CK,Supporting,Informational,1,110
+Threat Management,Spoofing Explained,Techniques for Spoofing Detection,Supporting,Informational,1,110
+Threat Management,Network Telemetry Insights,Understanding Telemetry in Cyber Security,Supporting,Informational,1,110
+Threat Management,UEBA Overview,Defining UEBA Meaning,Supporting,Informational,1,110
+Threat Management,Threat Intelligence Platforms,Top Threat Intelligence Platforms,Pillar page,Commercial,1,110
+Threat Management,Threat Hunting Solutions,Threat Hunting Service Overview,Pillar page,Transactional,1,110
+Threat Management,LOTL Insights,Understanding LOTL Attacks,Supporting,Informational,1,110
+Ungrouped (review),Ungrouped (review),Ungrouped (review),Ungrouped,Mixed,6,260
