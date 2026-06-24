@@ -49,6 +49,7 @@ MIXED_BELOW = 0.6        # if the top page type is below this share, the SERP is
 UBIQUITOUS_DF = 0.25     # domains ranking for this share of a pillar's keywords are dropped (non-discriminating)
 BLEND_ALPHA = 0.65       # weight on semantic vs specific-SERP overlap when forming pages
 PAGE_THRESHOLD = 0.50    # agglomerative distance threshold for the page blend
+PAGE_MERGE_SIM = 0.85    # within a pillar, merge same-intent pages whose centroids are at least this similar
 PILLAR_CAP = 400         # pillars over this many keywords are split into sub-pillars
 PILLAR_SUBTHRESHOLD = 0.40  # tighter threshold used when splitting an oversized pillar
 KEEP_FLOOR = 100         # a single-keyword page with at least this volume stays its own page
@@ -480,6 +481,63 @@ def fold_singletons(df, X, keep_floor=KEEP_FLOOR, fold_sim=FOLD_SIM):
     return nk, nf, nq
 
 
+def merge_pages(df, X, sim=PAGE_MERGE_SIM):
+    """Within each pillar, merge near-duplicate pages: those whose keyword centroids are at least
+    `sim` similar AND share the same page intent, so a commercial comparison page is never folded
+    into an informational guide on the same subject. The highest-volume page in each merged group
+    keeps its id and name; the names it absorbs are recorded in a 'merged_from' column so every
+    combine stays visible and reversible. Edits df in place; returns the number of pages absorbed."""
+    pid = df["page_id"].values.copy()
+    vol = pd.to_numeric(df["volume"], errors="coerce").fillna(0).values
+    name = df["page"].values.copy()
+    intent_col = df["page_intent"].values
+    merged_from = defaultdict(list)
+    absorbed = 0
+    for plr in sorted(set(int(p) for p in df["pillar_id"].values if p >= 0)):
+        pages = sorted(set(int(p) for p in pid[(df["pillar_id"].values == plr) & (pid >= 0)]))
+        if len(pages) < 2:
+            continue
+        pos = {p: np.where(pid == p)[0] for p in pages}
+        cent = np.vstack([X[pos[p]].mean(0) for p in pages])
+        cent = cent / np.clip(np.linalg.norm(cent, axis=1, keepdims=True), 1e-9, None)
+        with np.errstate(all="ignore"):
+            S = np.clip(np.nan_to_num(cent @ cent.T), 0.0, 1.0)
+        intent = {p: intent_col[pos[p][0]] for p in pages}
+        vols = {p: float(vol[pos[p]].sum()) for p in pages}
+        parent = {p: p for p in pages}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        for a in range(len(pages)):
+            for b in range(a + 1, len(pages)):
+                if S[a, b] >= sim and intent[pages[a]] == intent[pages[b]]:
+                    parent[find(pages[a])] = find(pages[b])
+        comp = defaultdict(list)
+        for p in pages:
+            comp[find(p)].append(p)
+        for members in comp.values():
+            if len(members) < 2:
+                continue
+            keep = max(members, key=lambda p: vols[p])
+            keep_name = name[pos[keep][0]]
+            for p in members:
+                if p == keep:
+                    continue
+                merged_from[keep].append(name[pos[p][0]])
+                pid[pos[p]] = keep
+                name[pos[p]] = keep_name
+                absorbed += 1
+    df["page_id"] = pid
+    df["page"] = name
+    df["merged_from"] = ["; ".join(sorted(set(merged_from.get(int(p), [])))) if int(p) >= 0 else ""
+                         for p in pid]
+    return absorbed
+
+
 def designate_hub_pages(df, max_candidates=15):
     """For each pillar, pick the hub (pillar) page the supporting pages link up to. The model chooses
     from the pillar's top pages, preferring breadth and overview intent; falls back to the highest-volume
@@ -538,6 +596,10 @@ def main():
     ap.add_argument("--split-oversized", action="store_true",
                     help="optionally break pillars over --pillar-cap into sub-pillars (off by default)")
     ap.add_argument("--no-fold", action="store_true")
+    ap.add_argument("--merge-sim", type=float, default=PAGE_MERGE_SIM,
+                    help="merge same-intent pages within a pillar whose centroids are at least this similar")
+    ap.add_argument("--no-merge", action="store_true",
+                    help="skip merging near-duplicate pages (on by default)")
     ap.add_argument("--no-hub", action="store_true")
     args = ap.parse_args()
 
@@ -649,6 +711,16 @@ def main():
     df.loc[df["page_id"] < 0, "page_intent"] = "Mixed"
     log(f"named {df.loc[df.page_id >= 0, 'page_id'].nunique()} pages")
 
+    # Merge near-duplicate pages within a pillar (same intent, very similar centroid). The
+    # highest-volume page keeps its name; the names it absorbs are kept in 'merged_from'.
+    merged = 0
+    if not args.no_merge:
+        merged = merge_pages(df, X, args.merge_sim)
+        log(f"merged {merged} near-duplicate page(s); "
+            f"{df.loc[df.page_id >= 0, 'page_id'].nunique()} pages remain")
+    else:
+        df["merged_from"] = ""
+
     # Designate the hub (pillar) page within each pillar; the rest are supporting pages.
     if not args.no_hub:
         df["page_role"] = df["page_id"].map(designate_hub_pages(df))
@@ -668,8 +740,10 @@ def main():
     pages = (df.groupby("page_id").agg(
                 Topic=("topic", "first"), Pillar=("pillar", "first"), Page=("page", "first"),
                 Role=("page_role", "first"), Intent=("page_intent", "first"),
-                Keywords=("keyword", "size"), Volume=("volume", "sum"))
-             .reset_index(drop=True).sort_values(["Topic", "Volume"], ascending=[True, False], na_position="last"))
+                Keywords=("keyword", "size"), Volume=("volume", "sum"),
+                MergedFrom=("merged_from", "first"))
+             .reset_index(drop=True).rename(columns={"MergedFrom": "Merged from"})
+             .sort_values(["Topic", "Volume"], ascending=[True, False], na_position="last"))
     pages.to_csv(os.path.join(args.outdir, "page_summary.csv"), index=False)
 
     meta = {
@@ -679,6 +753,7 @@ def main():
         "n_topics": int(df.loc[df.page_id >= 0, "topic_id"].nunique()),
         "n_pillars": int(df.loc[df.page_id >= 0, "pillar_id"].nunique()),
         "n_pages": int(df.loc[df.page_id >= 0, "page_id"].nunique()),
+        "n_pages_merged": int(merged),
         "n_ungrouped": int((df.page_id < 0).sum()),
         "intent_from_serp": int((df.intent_source == "serp").sum()),
         "intent_from_text": int((df.intent_source == "text").sum()),

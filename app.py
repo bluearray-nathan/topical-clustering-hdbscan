@@ -220,13 +220,15 @@ def render_results(run_id):
                                      key=lambda kv: -kv[1]["Volume"].sum(min_count=1)
                                      if kv[1]["Volume"].notna().any() else 0):
                 st.markdown(f"**{pillar}**  ·  {len(pg)} pages · {vol(pg['Volume'].sum(min_count=1))} vol")
+                extra = (["Merged from"] if "Merged from" in pg.columns
+                         and pg["Merged from"].fillna("").str.len().gt(0).any() else [])
                 if has_role:                       # hub page first, flagged
                     pg = pg.assign(_o=(pg["Role"] != "Pillar page").astype(int))
                     show = pg.sort_values(["_o", "Volume"], ascending=[True, False], na_position="last")[
-                        ["Role", "Page", "Intent", "Keywords", "Volume"]]
+                        ["Role", "Page", "Intent", "Keywords", "Volume"] + extra]
                 else:
-                    show = pg[["Page", "Intent", "Keywords", "Volume"]].sort_values(
-                        "Volume", ascending=False, na_position="last")
+                    show = pg.sort_values("Volume", ascending=False, na_position="last")[
+                        ["Page", "Intent", "Keywords", "Volume"] + extra]
                 st.dataframe(show, hide_index=True, use_container_width=True)
 
     if "Page role" in keyword_mapping.columns:
